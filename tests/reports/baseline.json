@@ -1,0 +1,259 @@
+{
+  "model": "qwen3.8-27b-obliterated",
+  "recordedRuns": 3,
+  "note": "Written by: node tests/run.js --repeat N --save-baseline",
+  "scenarios": {
+    "cmake-fix-and-test": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 21,
+      "checksPassed": 21,
+      "rate": 1
+    },
+    "msvc-crash-fix": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 18,
+      "checksPassed": 18,
+      "rate": 1
+    },
+    "python-pytest-precedence": {
+      "pass": 1,
+      "runs": 3,
+      "checks": 12,
+      "checksPassed": 10,
+      "rate": 0.3333333333333333
+    },
+    "node-test-csv": {
+      "pass": 2,
+      "runs": 3,
+      "checks": 12,
+      "checksPassed": 11,
+      "rate": 0.6666666666666666
+    },
+    "go-module-slug": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 12,
+      "checksPassed": 12,
+      "rate": 1
+    },
+    "encoding-legacy-mix": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 18,
+      "checksPassed": 18,
+      "rate": 1
+    },
+    "rename-mixed-eol": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 18,
+      "checksPassed": 18,
+      "rate": 1
+    },
+    "big-tree-search": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 12,
+      "checksPassed": 12,
+      "rate": 1
+    },
+    "noisy-command-exit": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 12,
+      "checksPassed": 12,
+      "rate": 1
+    },
+    "greenfield-cmake": {
+      "pass": 2,
+      "runs": 3,
+      "checks": 18,
+      "checksPassed": 15,
+      "rate": 0.6666666666666666
+    },
+    "approval-denied": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 15,
+      "checksPassed": 15,
+      "rate": 1
+    },
+    "sandbox-escape": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 18,
+      "checksPassed": 18,
+      "rate": 1
+    },
+    "msbuild-vcxproj": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 15,
+      "checksPassed": 15,
+      "rate": 1
+    },
+    "autoapprove-escalation": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 6,
+      "checksPassed": 6,
+      "rate": 1
+    },
+    "hanging-test-timeout": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 15,
+      "checksPassed": 15,
+      "rate": 1
+    },
+    "utf16-script-edit": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 15,
+      "checksPassed": 15,
+      "rate": 1
+    },
+    "hex-pe-header": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 12,
+      "checksPassed": 12,
+      "rate": 1
+    },
+    "huge-log-analysis": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 12,
+      "checksPassed": 12,
+      "rate": 1
+    },
+    "dotnet-console-build": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 15,
+      "checksPassed": 15,
+      "rate": 1
+    },
+    "multi-turn-grow": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 21,
+      "checksPassed": 21,
+      "rate": 1
+    },
+    "regex-log-migration": {
+      "pass": 1,
+      "runs": 3,
+      "checks": 21,
+      "checksPassed": 16,
+      "rate": 0.3333333333333333
+    },
+    "unreal-project-tree": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 18,
+      "checksPassed": 18,
+      "rate": 1
+    },
+    "long-path-tree": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 15,
+      "checksPassed": 15,
+      "rate": 1
+    },
+    "odd-filenames": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 15,
+      "checksPassed": 15,
+      "rate": 1
+    },
+    "git-repo-workflow": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 21,
+      "checksPassed": 21,
+      "rate": 1
+    },
+    "binary-asset-guard": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 14,
+      "checksPassed": 14,
+      "rate": 1
+    },
+    "cleanup-delete": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 21,
+      "checksPassed": 21,
+      "rate": 1
+    },
+    "big-source-edit": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 21,
+      "checksPassed": 21,
+      "rate": 1
+    },
+    "house-style-c": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 45,
+      "checksPassed": 45,
+      "rate": 1
+    },
+    "project-instructions-banner": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 24,
+      "checksPassed": 24,
+      "rate": 1
+    },
+    "default-rules-test-hygiene": {
+      "pass": 2,
+      "runs": 3,
+      "checks": 21,
+      "checksPassed": 18,
+      "rate": 0.6666666666666666
+    },
+    "kmdf-driver-leak": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 30,
+      "checksPassed": 27,
+      "rate": 1
+    },
+    "monorepo-version-bump": {
+      "pass": 0,
+      "runs": 3,
+      "checks": 33,
+      "checksPassed": 28,
+      "rate": 0
+    },
+    "github-actions-matrix": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 27,
+      "checksPassed": 27,
+      "rate": 1
+    },
+    "batch-to-powershell": {
+      "pass": 1,
+      "runs": 3,
+      "checks": 30,
+      "checksPassed": 28,
+      "rate": 0.3333333333333333
+    },
+    "sql-migration-add-column": {
+      "pass": 3,
+      "runs": 3,
+      "checks": 24,
+      "checksPassed": 24,
+      "rate": 1
+    }
+  }
+}

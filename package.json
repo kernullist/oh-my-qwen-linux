@@ -1,0 +1,25 @@
+{
+  "name": "oh-my-qwen",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ubuntu local coding agent for Qwen models in LM Studio: a chat UI that edits files, builds and runs tests",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js --port 5173",
+    "test": "node tests/unit.js",
+    "test:http": "node tests/http.js",
+    "test:native": "node tests/native.js",
+    "test:scenarios": "node tests/run.js",
+    "build": "node build.js",
+    "build:exe": "node build.js --exe",
+    "build:folder": "node build.js --folder",
+    "build:no-archive": "node build.js --no-archive"
+  },
+  "os": [
+    "linux"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

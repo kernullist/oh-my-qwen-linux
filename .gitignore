@@ -1,0 +1,11 @@
+dist/
+node_modules/
+data/
+*.log
+# Run artifacts are noise, but the baseline is the recorded expectation the
+# suite judges against: without it a fresh clone falls back to counting every
+# failure, including the ones a scenario produces on its own a third of the
+# time. Excluding the contents rather than the directory is what lets the
+# negation work - git does not descend into an excluded directory.
+tests/reports/*
+!tests/reports/baseline.json

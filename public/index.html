@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>oh-my-qwen</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+<div id="app">
+
+  <header class="room-header">
+    <div class="room-id">
+      <div class="room-avatar" aria-hidden="true">Q</div>
+      <div class="room-title">
+        <div class="room-name">
+          <span id="roomName">oh-my-qwen</span>
+          <span class="room-count" id="roomModel">모델 미선택</span>
+        </div>
+        <button class="room-sub" id="workspaceChip" title="작업 폴더 변경">
+          <span class="folder-glyph" aria-hidden="true">📁</span>
+          <span id="workspaceLabel">작업 폴더 미등록</span>
+        </button>
+      </div>
+    </div>
+    <div class="room-actions">
+      <button class="icon-btn" id="btnFolder" title="작업 폴더 등록/변경" aria-label="작업 폴더">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4h3.2c.7 0 1.36.3 1.82.82l.86.98h7.1A2.5 2.5 0 0 1 21 8.3v9.2a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5v-11z"/></svg>
+      </button>
+      <button class="icon-btn" id="btnSettings" title="설정" aria-label="설정">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zm9 3.5c0 .5-.04 1-.12 1.47l2.02 1.55-1.9 3.3-2.37-.96c-.75.63-1.6 1.12-2.53 1.44L15.7 22h-3.8l-.4-2.2a8.3 8.3 0 0 1-2.53-1.44l-2.36.95-1.9-3.29 2.01-1.55a8.6 8.6 0 0 1 0-2.94L4.71 9.98l1.9-3.3 2.36.96A8.3 8.3 0 0 1 11.5 6.2L11.9 4h3.8l.4 2.2c.93.32 1.78.81 2.53 1.44l2.36-.95 1.9 3.29-2.01 1.55c.08.47.12.97.12 1.47z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="status-strip" id="statusStrip" hidden>
+    <span id="statusText"></span>
+  </div>
+
+  <main class="chat-scroll" id="chatScroll">
+    <div class="chat-list" id="chatList"></div>
+  </main>
+
+  <div class="typing-bar" id="typingBar" hidden>
+    <span class="typing-dots"><i></i><i></i><i></i></span>
+    <span id="typingText">응답 생성 중...</span>
+    <button class="stop-btn" id="btnStop">중단</button>
+  </div>
+
+  <footer class="composer">
+    <button class="plus-btn" id="btnClear" title="대화 비우기" aria-label="대화 비우기">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l1 2h4v2H4V5h4l1-2zm-3 6h12l-1 12H7L6 9zm3 2v8h2v-8H9zm4 0v8h2v-8h-2z"/></svg>
+    </button>
+    <textarea id="input" rows="1" placeholder="메시지를 입력하세요 (Shift+Enter 줄바꿈)"></textarea>
+    <button class="send-btn" id="btnSend" disabled>전송</button>
+  </footer>
+
+</div>
+
+<!-- Settings sheet -->
+<div class="overlay" id="settingsOverlay" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-label="설정">
+    <div class="sheet-head">
+      <h2>설정</h2>
+      <button class="close-btn" id="btnCloseSettings" aria-label="닫기">×</button>
+    </div>
+
+    <div class="sheet-body">
+      <label class="field">
+        <span class="field-label">LM Studio 주소</span>
+        <div class="row">
+          <input type="text" id="inpBaseUrl" placeholder="http://localhost:1234" spellcheck="false" />
+          <button class="ghost-btn" id="btnLoadModels">모델 불러오기</button>
+        </div>
+        <span class="hint" id="baseUrlHint">LM Studio의 Developer 탭에서 서버를 켜 두세요.</span>
+      </label>
+
+      <label class="field">
+        <span class="field-label">모델</span>
+        <select id="selModel">
+          <option value="">모델을 불러와 주세요</option>
+        </select>
+        <span class="hint" id="modelHint"></span>
+      </label>
+
+      <div class="field-grid">
+        <label class="field">
+          <span class="field-label">Temperature</span>
+          <input type="number" id="inpTemperature" min="0" max="2" step="0.05" />
+        </label>
+        <label class="field">
+          <span class="field-label">응답 최대 토큰</span>
+          <input type="number" id="inpMaxTokens" min="256" max="32768" step="256" />
+        </label>
+        <label class="field">
+          <span class="field-label">대화 컨텍스트 예산</span>
+          <input type="number" id="inpContextTokens" min="4000" max="200000" step="1000" />
+        </label>
+        <label class="field">
+          <span class="field-label">최대 도구 호출 라운드</span>
+          <input type="number" id="inpMaxRounds" min="1" max="100" step="1" />
+        </label>
+      </div>
+
+      <span class="hint" id="contextHint"></span>
+
+      <label class="toggle">
+        <input type="checkbox" id="chkAutoApprove" />
+        <span>파일 수정/명령 실행 자동 승인</span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="chkShowThinking" />
+        <span>모델의 생각 과정 표시</span>
+      </label>
+
+      <div class="field">
+        <span class="field-label">
+          코딩 규칙
+          <button type="button" id="btnResetRules" class="link-btn">기본값 복원</button>
+        </span>
+        <textarea id="inpCodingRules" rows="6"
+                  placeholder="한 줄에 규칙 하나. 비워두면 규칙을 보내지 않습니다."></textarea>
+        <span class="field-hint">모든 대화에 함께 전달됩니다. 자유롭게 고치거나 지울 수 있습니다.</span>
+      </div>
+
+      <label class="field">
+        <span class="field-label">추가 시스템 지시 (선택)</span>
+        <textarea id="inpSystemPrompt" rows="4" placeholder="예: 코드 주석은 ASCII로만, 여는 중괄호는 다음 줄에"></textarea>
+      </label>
+
+      <div class="field">
+        <span class="field-label">설정 · 대화 저장 위치</span>
+        <code id="dataDirLabel">-</code>
+        <span class="field-hint" id="logPathHint"></span>
+      </div>
+
+      <div class="field">
+        <span class="field-label">서버</span>
+        <button type="button" id="btnShutdown" class="danger-btn">서버 종료</button>
+        <span class="field-hint">단일 실행 파일(exe)은 콘솔 창이 없어서 이 버튼으로 종료합니다. 다시 쓰려면 실행 파일을 다시 실행하세요.</span>
+      </div>
+    </div>
+
+    <div class="sheet-foot">
+      <span class="save-state" id="settingsState"></span>
+      <button class="primary-btn" id="btnSaveSettings">저장</button>
+    </div>
+  </div>
+</div>
+
+<!-- Workspace sheet -->
+<div class="overlay" id="folderOverlay" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-label="작업 폴더">
+    <div class="sheet-head">
+      <h2>작업 폴더</h2>
+      <button class="close-btn" id="btnCloseFolder" aria-label="닫기">×</button>
+    </div>
+
+    <div class="sheet-body">
+      <div class="current-folder">
+        <span class="field-label">현재 작업 폴더</span>
+        <code id="currentFolder">미등록</code>
+      </div>
+
+      <label class="field">
+        <span class="field-label">폴더 경로</span>
+        <div class="row">
+          <input type="text" id="inpFolder" placeholder="/home/user/projects/my-app" spellcheck="false" />
+          <button class="ghost-btn" id="btnBrowse">찾아보기</button>
+        </div>
+        <span class="hint" id="folderHint">찾아보기를 누르면 Ubuntu 폴더 선택 창이 열립니다. 필요하면 zenity 또는 kdialog를 설치하세요.</span>
+      </label>
+
+      <div class="field">
+        <span class="field-label">최근 폴더</span>
+        <div class="recent-list" id="recentList"></div>
+      </div>
+    </div>
+
+    <div class="sheet-foot">
+      <span class="save-state" id="folderState"></span>
+      <button class="primary-btn" id="btnApplyFolder">이 폴더로 설정</button>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
