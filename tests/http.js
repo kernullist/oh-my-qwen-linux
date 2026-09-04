@@ -290,12 +290,38 @@ async function testConfig(port)
     !(junk.json && junk.json.config && "nonsenseKey" in junk.json.config),
     junk.text.slice(0, 200));
 
+  const sampler = await request(port, "POST", "/api/config",
+    { body: { topP: 0.8, topK: 40, presencePenalty: 1.2, reasoningEffort: "medium" } });
+  const s = (sampler.json && sampler.json.config) || {};
+  ok("sampler fields are accepted and echoed",
+    s.topP === 0.8 && s.topK === 40 && s.presencePenalty === 1.2 && s.reasoningEffort === "medium",
+    JSON.stringify(s).slice(0, 200));
+
+  const badEffort = await request(port, "POST", "/api/config", { body: { reasoningEffort: "maximum" } });
+  ok("an unknown reasoning effort is never stored",
+    badEffort.code === 200 && badEffort.json &&
+    ["default", "xhigh", "medium", "low"].indexOf(badEffort.json.config.reasoningEffort) >= 0,
+    JSON.stringify(badEffort.json && badEffort.json.config).slice(0, 200));
+
+  // JSON.stringify turns NaN into null, so a cleared field used to arrive as
+  // null and Number(null) === 0 rewrote it to the bottom of its clamp range.
+  const before = (badEffort.json && badEffort.json.config) || {};
+  const cleared = await request(port, "POST", "/api/config", { body: { temperature: null, topP: "abc" } });
+  const after = (cleared.json && cleared.json.config) || {};
+  ok("null and non-numeric values leave fields unchanged",
+    cleared.code === 200 && after.temperature === before.temperature &&
+    after.topP === before.topP && after.topK === before.topK &&
+    after.presencePenalty === before.presencePenalty,
+    "before " + JSON.stringify([before.temperature, before.topP, before.topK, before.presencePenalty]) +
+    " after " + JSON.stringify([after.temperature, after.topP, after.topK, after.presencePenalty]));
+
   const notObject = await request(port, "POST", "/api/config", { body: "[1,2,3]" });
   ok("a non-object body does not crash the route", notObject.code === 200 || notObject.code === 400,
     String(notObject.code) + " " + notObject.text.slice(0, 150));
 
   // Restore something sane for the turns below.
-  await request(port, "POST", "/api/config", { body: { temperature: 0.2, maxToolRounds: 8 } });
+  await request(port, "POST", "/api/config",
+    { body: { temperature: 0.2, maxToolRounds: 8, reasoningEffort: "default" } });
 }
 
 async function testWorkspace(port)

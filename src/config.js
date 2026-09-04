@@ -20,15 +20,25 @@ const DEFAULT_CODING_RULES = [
   "When you change code, build it and run the tests before saying it works."
 ].join("\n");
 
+// Defaults target the Qwen3.8 class (27B, 262k native context): Qwen's own
+// thinking-mode sampling (temperature 0.6, top_p 0.95, top_k 20, presence 0)
+// and budgets the 4k/24k values of previous local models made far too small.
 const DEFAULTS =
 {
   baseUrl: "http://localhost:1234",
   model: "",
   workspace: "",
-  temperature: 0.3,
-  maxTokens: 4096,
-  contextTokens: 24000,
-  maxToolRounds: 24,
+  temperature: 0.6,
+  topP: 0.95,
+  topK: 20,
+  presencePenalty: 0.0,
+  // "default" sends nothing and leaves the model's own reasoning effort
+  // (xhigh) in place; medium/low tame an xhigh model that spends the whole
+  // token budget thinking. Unknown to the server, this field is ignored.
+  reasoningEffort: "default",
+  maxTokens: 8192,
+  contextTokens: 65536,
+  maxToolRounds: 32,
   idleTimeoutSec: 90,
   firstByteTimeoutSec: 300,
   autoApprove: false,
@@ -178,13 +188,32 @@ function sanitize(raw)
   {
     out.temperature = Math.min(2, Math.max(0, raw.temperature));
   }
+  if (Number.isFinite(raw.topP))
+  {
+    out.topP = Math.min(1, Math.max(0.01, raw.topP));
+  }
+  if (Number.isFinite(raw.topK))
+  {
+    out.topK = Math.min(200, Math.max(0, Math.round(raw.topK)));
+  }
+  if (Number.isFinite(raw.presencePenalty))
+  {
+    out.presencePenalty = Math.min(2, Math.max(-2, raw.presencePenalty));
+  }
+  if (typeof raw.reasoningEffort === "string" &&
+    ["default", "xhigh", "medium", "low"].indexOf(raw.reasoningEffort) >= 0)
+  {
+    out.reasoningEffort = raw.reasoningEffort;
+  }
   if (Number.isFinite(raw.maxTokens))
   {
     out.maxTokens = Math.min(32768, Math.max(256, Math.round(raw.maxTokens)));
   }
   if (Number.isFinite(raw.contextTokens))
   {
-    out.contextTokens = Math.min(200000, Math.max(4000, Math.round(raw.contextTokens)));
+    // The cap follows the widest native window this app is expected to front
+    // (Qwen3.8 262k); nothing here limits how much LM Studio actually loads.
+    out.contextTokens = Math.min(262144, Math.max(4000, Math.round(raw.contextTokens)));
   }
   if (Number.isFinite(raw.maxToolRounds))
   {

@@ -288,7 +288,9 @@ async function runScenario(scenario, opts)
     workspace: dir,
     model: options.model,
     baseUrl: options.baseUrl,
-    temperature: options.temperature !== undefined ? options.temperature : 0.2,
+    // Track the app default, not a private number: a harness that samples
+    // differently from production measures a different agent than it ships.
+    temperature: options.temperature !== undefined ? options.temperature : config.DEFAULTS.temperature,
     maxTokens: options.maxTokens || 3072,
     contextTokens: options.contextTokens || 12000,
     maxToolRounds: options.rounds || 20,

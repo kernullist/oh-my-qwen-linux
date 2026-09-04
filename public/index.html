@@ -95,13 +95,36 @@
         </label>
         <label class="field">
           <span class="field-label">대화 컨텍스트 예산</span>
-          <input type="number" id="inpContextTokens" min="4000" max="200000" step="1000" />
+          <input type="number" id="inpContextTokens" min="4000" max="262144" step="1000" />
         </label>
         <label class="field">
           <span class="field-label">최대 도구 호출 라운드</span>
           <input type="number" id="inpMaxRounds" min="1" max="100" step="1" />
         </label>
+        <label class="field">
+          <span class="field-label">Top P</span>
+          <input type="number" id="inpTopP" min="0.01" max="1" step="0.01" />
+        </label>
+        <label class="field">
+          <span class="field-label">Top K</span>
+          <input type="number" id="inpTopK" min="0" max="200" step="1" />
+        </label>
+        <label class="field">
+          <span class="field-label">Presence Penalty</span>
+          <input type="number" id="inpPresencePenalty" min="-2" max="2" step="0.1" />
+        </label>
+        <label class="field">
+          <span class="field-label">추론 노력</span>
+          <select id="selReasoningEffort">
+            <option value="default">모델 기본값</option>
+            <option value="xhigh">높음 (xhigh)</option>
+            <option value="medium">중간 (medium)</option>
+            <option value="low">낮음 (low)</option>
+          </select>
+        </label>
       </div>
+
+      <span class="hint" id="samplerHint">Qwen thinking 모드 권장값: temperature 0.6 · top_p 0.95 · top_k 20 · presence_penalty 0. '추론 노력'을 낮추면 thinking 소모가 줄어듭니다(미지원 서버에서는 무시됨).</span>
 
       <span class="hint" id="contextHint"></span>
 

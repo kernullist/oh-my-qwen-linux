@@ -56,8 +56,9 @@ function buildSystemPrompt(cfg)
     "",
     "Operating rules:",
     "1. Every path argument is relative to the working folder. Paths outside it are rejected, so never pass absolute system paths.",
-    "1b. run_command is not a way around rule 1. If a file tool refuses a path, the answer is that the file is out of scope, not that you should read it with Get-Content. Tell the user instead.",
+    "1b. run_command is not a way around rule 1. If a file tool refuses a path, the answer is that the file is out of scope, not that you should read it with cat or sed. Tell the user instead.",
     "2. Look before you touch: use list_dir, find_files, search_text and read_file to learn the real state of the project.",
+    "2b. For a request with several steps, state one short plan (files, order, verification) before the first write, then follow it tool by tool. Revise the plan if the code disagrees with it instead of drifting off it.",
     "3. Never invent file contents. Call read_file before edit_file, and make old_string match the file byte for byte including indentation.",
     "4. When the user asks for code or a document, actually create or modify the files with write_file / edit_file. Do not paste a whole file into chat as a substitute for writing it.",
     "4b. For the same change across many files use replace_in_files once. Never loop edit_file over dozens of files, and never do bulk edits through the shell: shell rewrites can change line endings, permissions, or encodings across the whole tree.",
@@ -807,6 +808,10 @@ async function runTurn(ctx)
         messages: request,
         tools: tools.SPECS,
         temperature: cfg.temperature,
+        topP: cfg.topP,
+        topK: cfg.topK,
+        presencePenalty: cfg.presencePenalty,
+        reasoningEffort: cfg.reasoningEffort,
         maxTokens: replyTokens,
         idleTimeoutMs: cfg.idleTimeoutSec * 1000,
         firstByteTimeoutMs: cfg.firstByteTimeoutSec * 1000,
@@ -866,8 +871,8 @@ async function runTurn(ctx)
             // model, a bigger ceiling produced proportionally more reasoning and
             // still no answer.
             ? "모델이 '응답 최대 토큰'(" + replyTokens + ")을 생각 과정에만 다 써서 답변이 비어 있습니다. " +
-              "요청을 더 작은 단계로 나눠 주세요. 한도를 올리는 것은 이 모델에서는 도움이 되지 않았습니다. " +
-              "'생각 과정 표시'는 화면 표시만 바꾸므로 토큰 소모에는 영향이 없습니다."
+              "설정에서 '추론 노력'을 중간/낮음으로 낮추거나 요청을 더 작은 단계로 나눠 주세요. " +
+              "한도를 올려도 생각이 늘어날 뿐이고, '생각 과정 표시'는 화면 표시만 바꿉니다."
             : "응답이 '응답 최대 토큰'(" + replyTokens + ") 한도에 걸려 도중에 잘렸습니다. " +
               "위 내용은 완결된 답변이 아닙니다. 설정에서 한도를 늘리거나 더 좁은 범위로 다시 질문해 주세요.",
           at: new Date().toISOString()
@@ -905,8 +910,7 @@ async function runTurn(ctx)
             level: "info",
             text: "모델이 빈 응답을 반환해서 다음 단계를 한 번 더 요청했습니다." +
               (ranOut
-                ? " 응답 공간은 그대로 둡니다. 늘려 보니 이 모델은 늘어난 만큼 더 생각하는 데 쓰고 " +
-                  "답변은 다시 비었습니다."
+                ? " 응답 공간은 그대로 둡니다. 늘려도 생각이 늘어날 뿐이니, 설정의 '추론 노력'을 낮추는 쪽이 유효합니다."
                 : ""),
             at: new Date().toISOString()
           };
@@ -1357,6 +1361,10 @@ async function runTurn(ctx)
         model: cfg.model,
         messages: request,
         temperature: cfg.temperature,
+        topP: cfg.topP,
+        topK: cfg.topK,
+        presencePenalty: cfg.presencePenalty,
+        reasoningEffort: cfg.reasoningEffort,
         maxTokens: Math.min(2048, cfg.maxTokens),
         idleTimeoutMs: cfg.idleTimeoutSec * 1000,
         firstByteTimeoutMs: cfg.firstByteTimeoutSec * 1000,

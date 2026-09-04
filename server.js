@@ -188,6 +188,10 @@ function publicConfig()
     model: cfg.model,
     workspace: cfg.workspace,
     temperature: cfg.temperature,
+    topP: cfg.topP,
+    topK: cfg.topK,
+    presencePenalty: cfg.presencePenalty,
+    reasoningEffort: cfg.reasoningEffort,
     maxTokens: cfg.maxTokens,
     contextTokens: cfg.contextTokens,
     maxToolRounds: cfg.maxToolRounds,
@@ -286,6 +290,28 @@ async function handleApi(req, res, url)
     const body = await readBody(req);
     const patch = {};
 
+    // A missing or non-numeric value has to mean "leave it unchanged". JSON has
+    // no NaN, and JSON.stringify renders NaN as null, so Number(null) === 0
+    // would silently rewrite a cleared field to the bottom of its clamp range.
+    function numericField(field)
+    {
+      const value = body[field];
+      if (value === undefined || value === null)
+      {
+        return null;
+      }
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    }
+    function applyNumber(field)
+    {
+      const n = numericField(field);
+      if (n !== null)
+      {
+        patch[field] = n;
+      }
+    }
+
     if (typeof body.baseUrl === "string")
     {
       patch.baseUrl = lmstudio.normalizeBase(body.baseUrl);
@@ -294,29 +320,20 @@ async function handleApi(req, res, url)
     {
       patch.model = body.model;
     }
-    if (body.temperature !== undefined)
+
+    applyNumber("temperature");
+    applyNumber("topP");
+    applyNumber("topK");
+    applyNumber("presencePenalty");
+    applyNumber("maxTokens");
+    applyNumber("contextTokens");
+    applyNumber("maxToolRounds");
+    applyNumber("idleTimeoutSec");
+    applyNumber("firstByteTimeoutSec");
+
+    if (typeof body.reasoningEffort === "string")
     {
-      patch.temperature = Number(body.temperature);
-    }
-    if (body.maxTokens !== undefined)
-    {
-      patch.maxTokens = Number(body.maxTokens);
-    }
-    if (body.contextTokens !== undefined)
-    {
-      patch.contextTokens = Number(body.contextTokens);
-    }
-    if (body.maxToolRounds !== undefined)
-    {
-      patch.maxToolRounds = Number(body.maxToolRounds);
-    }
-    if (body.idleTimeoutSec !== undefined)
-    {
-      patch.idleTimeoutSec = Number(body.idleTimeoutSec);
-    }
-    if (body.firstByteTimeoutSec !== undefined)
-    {
-      patch.firstByteTimeoutSec = Number(body.firstByteTimeoutSec);
+      patch.reasoningEffort = body.reasoningEffort;
     }
     if (typeof body.autoApprove === "boolean")
     {

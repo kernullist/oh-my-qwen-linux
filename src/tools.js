@@ -14,16 +14,16 @@ const project = require("./project");
 // read_file loads the whole file to count lines accurately, so cap the size and
 // cap how many lines a single call returns.
 const MAX_FILE_BYTES = 32 * 1024 * 1024;
-const MAX_LINES_PER_READ = 2000;
+const MAX_LINES_PER_READ = 4000;
 const MAX_LINE_CHARS = 2000;
-const MAX_RESULT_CHARS = 24000;
+const MAX_RESULT_CHARS = 48000;
 
 // How big a file may be before a text scan gives up on it. Logs and generated
 // sources cross the old 2 MB line constantly, and the skip used to be silent,
 // which turned "I never opened it" into "the text is not there".
 const SEARCH_MAX_BYTES = 16 * 1024 * 1024;
 const REPLACE_MAX_BYTES = 8 * 1024 * 1024;
-const MAX_COMMAND_OUTPUT = 16000;
+const MAX_COMMAND_OUTPUT = 32000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120000;
 
 const SKIP_DIRS = new Set(
@@ -1159,7 +1159,7 @@ async function toolReadFile(root, args)
       ok: false,
       text: "file is too large to load as text (" + Math.round(stat.size / 1024 / 1024) + " MB, limit " +
         Math.round(MAX_FILE_BYTES / 1024 / 1024) + " MB). Analyse it with run_command instead, " +
-        "for example: Select-String -Path " + toPosix(args.path) + " -Pattern 'ERROR' | Measure-Object"
+        "for example: grep -c 'ERROR' \"" + toPosix(args.path) + "\""
     };
   }
 
@@ -1212,7 +1212,7 @@ async function toolReadFile(root, args)
   {
     notes.push("Not the whole file: " + (total - lastShown) + " line(s) after line " + lastShown +
       " were not returned. Pass start_line=" + (lastShown + 1) + " to continue, " +
-      "or use run_command (Select-String, Measure-Object) when you need to reason over the entire file.");
+      "or use run_command (grep -n, sed -n) when you need to reason over the entire file.");
   }
   if (offset > 1)
   {
@@ -1221,12 +1221,12 @@ async function toolReadFile(root, args)
   if (decoded.encoding === "utf16le" || decoded.encoding === "utf16be")
   {
     notes.push("This file is " + (decoded.encoding === "utf16le" ? "UTF-16LE" : "UTF-16BE") +
-      ", which is what PowerShell 5.1 writes by default. Edits keep that encoding.");
+      ". Edits keep that encoding.");
   }
   else if (decoded.encoding === "legacy")
   {
-    notes.push("This file is " + decoded.label + ", not UTF-8. Editing it saves it as UTF-8, " +
-      "which is what MSVC and PowerShell expect; the text itself is preserved.");
+    notes.push("This file is " + decoded.label + ", not UTF-8. Editing it saves it as UTF-8; " +
+      "the text itself is preserved.");
   }
   if (clippedLines > 0)
   {
@@ -2121,8 +2121,8 @@ async function toolSearchText(root, args)
       Math.round(SEARCH_MAX_BYTES / 1024 / 1024) + " MB:\n" + skippedLarge.slice(0, 10).join("\n") +
       (skippedLarge.length > 10 ? ("\n... and " + (skippedLarge.length - 10) + " more") : "") +
       "\nSearch inside those with run_command, for example: " +
-      "Select-String -Path " + skippedLarge[0].replace(/ \(.*$/, "") + " -Pattern '" + query.slice(0, 40) +
-      "' | Select-Object -First 20";
+      "grep -n -m 20 '" + query.slice(0, 40).replace(/'/g, "'\\''") + "' \"" +
+      skippedLarge[0].replace(/ \(.*$/, "") + "\"";
   }
   if (skippedUnreadable.length > 0)
   {
@@ -3299,7 +3299,7 @@ async function toolRunCommand(root, args, signal)
     }
     else if (res.code === 127)
     {
-      parts.push("hint: Bash could not find a command. Check spelling and use command -v; install a missing package instead of searching Windows tool paths.");
+      parts.push("hint: Bash could not find a command. Check spelling with command -v; install the missing package instead of guessing a path.");
     }
   }
   if (!res.stdout.trim() && !res.stderr.trim())
@@ -3381,7 +3381,7 @@ const SPECS =
         {
           path: { type: "string", description: "File path relative to the working folder." },
           start_line: { type: "integer", description: "1-based first line to return. Default 1." },
-          max_lines: { type: "integer", description: "How many lines to return. Default 2000." },
+          max_lines: { type: "integer", description: "How many lines to return. Default 4000." },
           hex: { type: "boolean", description: "Return a hex dump of the raw bytes instead of text. Works on binaries." },
           start_byte: { type: "integer", description: "With hex=true: byte offset to start at. Default 0." },
           max_bytes: { type: "integer", description: "With hex=true: how many bytes to dump. Default 256, maximum 4096." }
@@ -3511,7 +3511,7 @@ const SPECS =
     function:
     {
       name: "replace_in_files",
-      description: "Replace text across many files at once, preserving each file's line endings and BOM. Use this instead of editing files one by one or shelling out to Set-Content, which corrupts encodings. When the text varies between files (different messages, names, numbers), use regex=true with a capture group and a $1 backreference so ONE call covers every variant instead of one call per literal. Requires user approval.",
+      description: "Replace text across many files at once, preserving each file's line endings and BOM. Use this instead of editing files one by one or rewriting files through the shell (sed -i), which corrupts encodings. When the text varies between files (different messages, names, numbers), use regex=true with a capture group and a $1 backreference so ONE call covers every variant instead of one call per literal. Requires user approval.",
       parameters:
       {
         type: "object",
@@ -3664,8 +3664,8 @@ function friendlyFsError(err, root)
 
   if (code === "EPERM" || code === "EACCES")
   {
-    return "permission denied (" + msg + "). The file is most likely read-only or locked by another process; " +
-      "clear the read-only attribute, close whatever holds it, or write to a different path.";
+    return "permission denied (" + msg + "). The file is most likely read-only or held by another process; " +
+      "check write permission (chmod u+w), close whatever holds it, or write to a different path.";
   }
   if (code === "EBUSY")
   {

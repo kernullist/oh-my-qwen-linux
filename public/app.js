@@ -1094,6 +1094,17 @@
     el("inpMaxTokens").value = cfg.maxTokens;
     el("inpContextTokens").value = cfg.contextTokens;
     el("inpMaxRounds").value = cfg.maxToolRounds;
+    el("inpTopP").value = cfg.topP;
+    el("inpTopK").value = cfg.topK;
+    el("inpPresencePenalty").value = cfg.presencePenalty;
+    const effortSel = el("selReasoningEffort");
+    effortSel.value = cfg.reasoningEffort || "default";
+    // A value the select does not know lands as an empty selection; fall back
+    // to the model default instead of saving an empty string.
+    if (!effortSel.value)
+    {
+      effortSel.value = "default";
+    }
     el("chkAutoApprove").checked = !!cfg.autoApprove;
     el("chkShowThinking").checked = !!cfg.showThinking;
     el("inpCodingRules").value = (typeof cfg.codingRules === "string") ? cfg.codingRules : "";
@@ -1345,11 +1356,28 @@
       maxTokens: parseInt(el("inpMaxTokens").value, 10),
       contextTokens: parseInt(el("inpContextTokens").value, 10),
       maxToolRounds: parseInt(el("inpMaxRounds").value, 10),
+      topP: parseFloat(el("inpTopP").value),
+      topK: parseInt(el("inpTopK").value, 10),
+      presencePenalty: parseFloat(el("inpPresencePenalty").value),
+      reasoningEffort: el("selReasoningEffort").value,
       autoApprove: el("chkAutoApprove").checked,
       showThinking: el("chkShowThinking").checked,
       codingRules: el("inpCodingRules").value,
       systemPrompt: el("inpSystemPrompt").value
     };
+
+    // An emptied field is "leave it unchanged", not zero. parseFloat/parseInt
+    // give NaN there and JSON.stringify would send null, which the server would
+    // otherwise clamp to the bottom of the field's range.
+    const numericFields =
+      ["temperature", "maxTokens", "contextTokens", "maxToolRounds", "topP", "topK", "presencePenalty"];
+    for (let i = 0; i < numericFields.length; i++)
+    {
+      if (!Number.isFinite(payload[numericFields[i]]))
+      {
+        delete payload[numericFields[i]];
+      }
+    }
 
     try
     {

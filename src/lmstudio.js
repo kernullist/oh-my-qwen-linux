@@ -260,6 +260,28 @@ function recoverInlineToolCall(text)
   };
 }
 
+// Non-standard request fields this client may add. A server that validates
+// strictly names the offending field in its 400 body instead of ignoring it.
+// Every one of these is optional, so they can be dropped and the request sent
+// again: one picky endpoint must not make every turn fail.
+function stripRejectedExtras(body, errorText)
+{
+  const extras = ["top_k", "reasoning_effort", "chat_template_kwargs"];
+  let stripped = false;
+
+  for (let i = 0; i < extras.length; i++)
+  {
+    const name = extras[i];
+    if (body[name] !== undefined && errorText.indexOf(name) >= 0)
+    {
+      delete body[name];
+      stripped = true;
+    }
+  }
+
+  return stripped;
+}
+
 // Streams one assistant turn.
 // onEvent({ type: "reasoning" | "content", text }) fires for every delta.
 // Resolves with { content, reasoning, toolCalls, finishReason, usage }.
@@ -345,6 +367,31 @@ async function streamChat(opts, onEvent)
     stream_options: { include_usage: true }
   };
 
+  // Qwen thinking-mode samplers. top_k is not an OpenAI field, so servers that
+  // do not know it ignore it rather than failing the request.
+  if (Number.isFinite(opts.topP))
+  {
+    body.top_p = opts.topP;
+  }
+  if (Number.isFinite(opts.topK) && opts.topK > 0)
+  {
+    body.top_k = opts.topK;
+  }
+  if (Number.isFinite(opts.presencePenalty))
+  {
+    body.presence_penalty = opts.presencePenalty;
+  }
+
+  // Lowering the reasoning effort is the lever against an xhigh model that
+  // spends the whole token budget thinking. Sent both ways because vLLM/sglang
+  // read the top-level field and chat-template-based servers read the kwargs;
+  // a server that knows neither field ignores both.
+  if (opts.reasoningEffort === "medium" || opts.reasoningEffort === "low")
+  {
+    body.reasoning_effort = opts.reasoningEffort;
+    body.chat_template_kwargs = { reasoning_effort: opts.reasoningEffort };
+  }
+
   if (Array.isArray(opts.tools) && opts.tools.length > 0)
   {
     body.tools = opts.tools;
@@ -383,18 +430,48 @@ async function streamChat(opts, onEvent)
 
   if (!res.ok || !res.body)
   {
-    const text = await res.text().catch(function () { return ""; });
-    let detail = text.slice(0, 600);
-    try
+    let text = await res.text().catch(function () { return ""; });
+
+    if (res.status === 400 && stripRejectedExtras(body, text))
     {
-      const j = JSON.parse(text);
-      detail = (j.error && (j.error.message || j.error)) || detail;
+      try
+      {
+        res = await fetch(base + "/v1/chat/completions",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: inner.signal
+        });
+        if (res.ok && res.body)
+        {
+          text = "";
+        }
+        else
+        {
+          text = await res.text().catch(function () { return ""; });
+        }
+      }
+      catch (retryErr)
+      {
+        // Report the first response below; the retry added nothing.
+      }
     }
-    catch (err)
+
+    if (!res.ok || !res.body)
     {
-      // keep the raw text
+      let detail = text.slice(0, 600);
+      try
+      {
+        const j = JSON.parse(text);
+        detail = (j.error && (j.error.message || j.error)) || detail;
+      }
+      catch (err)
+      {
+        // keep the raw text
+      }
+      throw new Error("LM Studio request failed (HTTP " + res.status + "): " + detail);
     }
-    throw new Error("LM Studio request failed (HTTP " + res.status + "): " + detail);
   }
 
   const decoder = new TextDecoder();
