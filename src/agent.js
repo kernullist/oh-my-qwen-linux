@@ -9,6 +9,7 @@ const tools = require("./tools");
 const toolchain = require("./toolchain");
 const project = require("./project");
 const sessionStore = require("./session");
+const permissions = require("./permissions");
 
 const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -43,6 +44,31 @@ function messageTokens(msg)
   return total;
 }
 
+// Rule 7 follows the permission mode, so the model is not told to expect an
+// approval that will never be asked for, or the other way round.
+function permissionRule(mode)
+{
+  if (mode === "full")
+  {
+    return "7. The user turned off every approval prompt: your actions run immediately with nobody checking them first. " +
+      "Be careful with anything destructive (rm -rf, git reset --hard, overwriting data), stay inside the working folder, " +
+      "and never touch system files, other projects or credentials unless the user asked for exactly that.";
+  }
+  if (mode === "auto")
+  {
+    return "7. Actions inside the working folder run without asking the user. A command that reaches outside the folder " +
+      "or rewrites a binary file still needs approval. If an approval is denied, stop that action and ask what to do instead.";
+  }
+  if (mode === "edits")
+  {
+    return "7. File edits inside the working folder (write_file, edit_file, replace_in_files, create_dir) run without asking. " +
+      "delete_path, run_command and build/run/test need the user's approval. If an approval is denied, stop that action " +
+      "and ask what to do instead.";
+  }
+  return "7. write_file, edit_file, create_dir, delete_path and run_command need the user's approval. If an approval is " +
+    "denied, stop that action and ask what to do instead.";
+}
+
 function buildSystemPrompt(cfg)
 {
   const ws = cfg.workspace || "(not set)";
@@ -66,7 +92,7 @@ function buildSystemPrompt(cfg)
     "5. Chain tool calls until the task is really done. Do not stop after only reading.",
     "5b. A request with several parts is finished only when every part is. Before your final reply, walk the request part by part and say what you did for each one. If a part is not done, do it instead of reporting.",
     "6. Build with build_project, run with run_project, test with test_project. They already know this project's build system. Use run_command only for things they do not cover (git, ad-hoc inspection, custom scripts).",
-    "7. write_file, edit_file, create_dir, delete_path and run_command need the user's approval. If an approval is denied, stop that action and ask what to do instead.",
+    permissionRule(permissions.modeOf(cfg)),
     "8. Keep chat replies short and concrete: what you inspected, what you changed, which files, what to do next. Do not dump entire files back into the chat.",
     "9. Reply in Korean by default. Keep code, identifiers, file paths and log strings in English.",
     "10. If a tool fails, read the error, fix the cause, and retry with a corrected call instead of repeating the same call.",
@@ -1370,14 +1396,17 @@ async function runTurn(ctx)
         }
 
         // run_command is the one tool that can step outside the working folder,
-        // so a command reaching outside still gets a card even on auto-approve.
-        // Auto-approve means "I trust you inside my folder", not "anywhere".
+        // so a command reaching outside still gets a card in "auto" mode, which
+        // means "I trust you inside my folder", not "anywhere". A binary rewrite
+        // through the shell is the one in-folder edit the file tools refuse
+        // outright, so it is treated the same way.
         const reaching = name === "run_command" ? tools.outsidePaths(root, args.command) : [];
-        // A binary rewrite through the shell is the one in-folder edit the file
-        // tools refuse outright, so it raises a card even under auto-approve.
         const binaryTargets = name === "run_command" ? tools.binaryWrites(root, args.command) : [];
-        const needsApproval = tools.isMutating(name) &&
-          (!cfg.autoApprove || reaching.length > 0 || binaryTargets.length > 0);
+        const risk = { mutating: tools.isMutating(name), outsidePaths: reaching, binaryWrites: binaryTargets };
+        // Read live, not from the turn's snapshot: switching to auto in the
+        // middle of a long turn should stop the cards from the next call on.
+        const mode = permissions.modeOf(ctx.liveConfig ? ctx.liveConfig() : cfg);
+        const needsApproval = permissions.needsApproval(mode, name, risk);
 
         function announceCall()
         {
@@ -1411,6 +1440,7 @@ async function runTurn(ctx)
             name: name,
             label: label,
             preview: approvalPreview(name, args),
+            mutating: risk.mutating,
             outsidePaths: reaching,
             binaryWrites: binaryTargets,
             at: new Date().toISOString()

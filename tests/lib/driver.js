@@ -296,7 +296,7 @@ async function runScenario(scenario, opts)
     maxToolRounds: options.rounds || 20,
     idleTimeoutSec: options.idleTimeoutSec || 120,
     firstByteTimeoutSec: options.firstByteTimeoutSec || 300,
-    autoApprove: false
+    permissionMode: "ask"
   }, scenario.config || {});
 
   const session = new sessionStore.Session(dir);

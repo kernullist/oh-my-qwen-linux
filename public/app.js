@@ -628,7 +628,9 @@
   function markApprovalResolved(id, approved, reason)
   {
     const card = chatList.querySelector('.approval[data-approval-id="' + CSS.escape(id) + '"]');
-    if (!card)
+    // The first verdict wins: the agent repeats it after the server already
+    // said why, for example "allowed because the mode changed".
+    if (!card || card.classList.contains("resolved"))
     {
       return;
     }
@@ -640,6 +642,10 @@
       if (reason === "timeout")
       {
         label = "시간이 초과되어 자동 거부되었습니다";
+      }
+      else if (reason === "mode")
+      {
+        label = "권한 모드가 바뀌어 자동으로 허용했습니다";
       }
       actions.innerHTML = '<span class="approval-result" style="color:' + (approved ? "#1f7a4d" : "#c0392b") + '">' +
         escapeHtml(label) + "</span>";
@@ -774,8 +780,74 @@
       setStatus(state.connected ? "" : "서버 연결이 끊어졌습니다. 재연결 중...", "error");
     }
 
+    syncModePill();
     updateSendEnabled();
   }
+
+  // ------------------------------------------------------- permission mode
+
+  const PERMISSION_HINTS =
+  {
+    ask: "파일 쓰기, 수정, 삭제, 빌드, 실행, 명령은 매번 승인 카드를 띄웁니다.",
+    edits: "작업 폴더 안의 파일 쓰기와 수정은 바로 실행합니다. 삭제, 명령, 빌드, 실행, 테스트는 묻습니다.",
+    auto: "작업 폴더 안의 작업은 모두 묻지 않고 실행합니다. 폴더 밖 경로를 건드리거나 바이너리를 셸로 덮어쓰는 명령만 묻습니다.",
+    full: "어떤 작업도 묻지 않습니다. 폴더 밖을 건드리는 명령도 바로 실행되니 신뢰하는 작업에서만 쓰세요."
+  };
+
+  function showPermissionHint(mode)
+  {
+    const hint = el("permissionHint");
+    hint.textContent = PERMISSION_HINTS[mode] || "";
+    hint.className = "hint" + (mode === "full" ? " err" : "");
+  }
+
+  function syncModePill()
+  {
+    const pill = el("selModeQuick");
+    const mode = (state.config && state.config.permissionMode) || "ask";
+    pill.value = mode;
+    pill.dataset.mode = mode;
+    pill.title = "권한 모드: " + (PERMISSION_HINTS[mode] || "");
+  }
+
+  // "full" removes the last check on commands that leave the folder, so it is
+  // confirmed once each time it is chosen.
+  function confirmFull(mode)
+  {
+    return mode !== "full" ||
+      window.confirm("전체 자동 모드에서는 폴더 밖을 건드리는 명령까지 묻지 않고 실행합니다. 계속할까요?");
+  }
+
+  el("selModeQuick").addEventListener("change", async function ()
+  {
+    const mode = el("selModeQuick").value;
+    if (!confirmFull(mode))
+    {
+      syncModePill();
+      return;
+    }
+    try
+    {
+      const data = await api("/api/config", { method: "POST", body: JSON.stringify({ permissionMode: mode }) });
+      state.config = data.config;
+      syncModePill();
+    }
+    catch (err)
+    {
+      setStatus("권한 모드 변경 실패: " + err.message, "error");
+      syncModePill();
+    }
+  });
+
+  el("selPermissionMode").addEventListener("change", function ()
+  {
+    const sel = el("selPermissionMode");
+    if (!confirmFull(sel.value))
+    {
+      sel.value = (state.config && state.config.permissionMode) || "ask";
+    }
+    showPermissionHint(sel.value);
+  });
 
   function updateSendEnabled()
   {
@@ -1146,7 +1218,8 @@
     {
       effortSel.value = "default";
     }
-    el("chkAutoApprove").checked = !!cfg.autoApprove;
+    el("selPermissionMode").value = cfg.permissionMode || "ask";
+    showPermissionHint(el("selPermissionMode").value);
     el("chkShowThinking").checked = !!cfg.showThinking;
     el("inpCodingRules").value = (typeof cfg.codingRules === "string") ? cfg.codingRules : "";
     defaultCodingRules = cfg.defaultCodingRules || defaultCodingRules;
@@ -1458,7 +1531,7 @@
       topK: parseInt(el("inpTopK").value, 10),
       presencePenalty: parseFloat(el("inpPresencePenalty").value),
       reasoningEffort: el("selReasoningEffort").value,
-      autoApprove: el("chkAutoApprove").checked,
+      permissionMode: el("selPermissionMode").value,
       showThinking: el("chkShowThinking").checked,
       codingRules: el("inpCodingRules").value,
       systemPrompt: el("inpSystemPrompt").value

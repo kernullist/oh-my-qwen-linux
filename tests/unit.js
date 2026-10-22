@@ -2109,6 +2109,7 @@ async function main()
   testWireSafeArguments();
   await testWebSearch();
   testVerifyTool();
+  testPermissionModes();
   testArgumentTypes();
   testInlineRecoveryShapes();
   await testShellEndings(base);
@@ -2325,6 +2326,47 @@ async function testWebSearch()
     }
     server.close();
   }
+}
+
+// Which calls stop for a card in each permission mode.
+function testPermissionModes()
+{
+  group("permission modes");
+
+  const permissions = require("../src/permissions");
+  const inside = { mutating: true, outsidePaths: [], binaryWrites: [] };
+  const outside = { mutating: true, outsidePaths: ["/etc/passwd"], binaryWrites: [] };
+  const binary = { mutating: true, outsidePaths: [], binaryWrites: ["data/lookup.dat"] };
+  const read = { mutating: false, outsidePaths: [], binaryWrites: [] };
+
+  const table = function (mode)
+  {
+    return [
+      permissions.needsApproval(mode, "read_file", read),
+      permissions.needsApproval(mode, "edit_file", inside),
+      permissions.needsApproval(mode, "delete_path", inside),
+      permissions.needsApproval(mode, "run_command", inside),
+      permissions.needsApproval(mode, "run_command", outside),
+      permissions.needsApproval(mode, "run_command", binary)
+    ];
+  };
+
+  eq("ask: every change asks", table("ask"), [false, true, true, true, true, true]);
+  eq("edits: only file edits run on their own", table("edits"), [false, false, true, true, true, true]);
+  eq("auto: only leaving the folder or rewriting a binary asks", table("auto"), [false, false, false, false, true, true]);
+  eq("full: nothing asks", table("full"), [false, false, false, false, false, false]);
+
+  eq("an old autoApprove config means auto", permissions.modeOf({ autoApprove: true }), "auto");
+  eq("and without it, ask", permissions.modeOf({}), "ask");
+  eq("an explicit mode wins over the old flag", permissions.modeOf({ permissionMode: "edits", autoApprove: true }), "edits");
+  eq("a saved config migrates", config.DEFAULTS.permissionMode, "ask");
+
+  const prompt = function (mode)
+  {
+    return agent.buildSystemPrompt(Object.assign({}, config.DEFAULTS, { workspace: __dirname, permissionMode: mode }));
+  };
+  ok("the prompt tells a full-mode model nobody is checking", /nobody checking/.test(prompt("full")), "missing");
+  ok("and an ask-mode model that changes need approval", /need the user's approval/.test(prompt("ask")), "missing");
 }
 
 // The verification nudge used to send the model to a test runner that was not

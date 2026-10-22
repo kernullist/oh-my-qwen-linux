@@ -18,6 +18,7 @@ const agent = require("./src/agent");
 const picker = require("./src/picker");
 const assets = require("./src/assets");
 const websearch = require("./src/websearch");
+const permissions = require("./src/permissions");
 
 // In a single-file build the UI is embedded, so this path is only a fallback.
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -198,7 +199,7 @@ function publicConfig()
     maxToolRounds: cfg.maxToolRounds,
     idleTimeoutSec: cfg.idleTimeoutSec,
     firstByteTimeoutSec: cfg.firstByteTimeoutSec,
-    autoApprove: cfg.autoApprove,
+    permissionMode: cfg.permissionMode,
     showThinking: cfg.showThinking,
     codingRules: cfg.codingRules,
     // What the tool schema costs on every request. The settings screen adds it
@@ -251,6 +252,25 @@ function workspaceInfo()
 function currentSession()
 {
   return sessionStore.get(config.load().workspace);
+}
+
+// Switching to a more permissive mode while a card is waiting should not leave
+// the turn stuck on a question the new mode would never have asked.
+function releaseApprovals(mode)
+{
+  const session = currentSession();
+  const ids = Array.from(session.pending.keys());
+  for (let i = 0; i < ids.length; i++)
+  {
+    const entry = session.pending.get(ids[i]);
+    const info = entry && entry.info;
+    if (!info || permissions.needsApproval(mode, info.name, info))
+    {
+      continue;
+    }
+    entry.resolve({ approved: true });
+    broadcast("approval_resolved", { id: info.id, approved: true, reason: "mode" }, session.workspace);
+  }
 }
 
 async function handleApi(req, res, url)
@@ -341,9 +361,15 @@ async function handleApi(req, res, url)
     {
       patch.reasoningEffort = body.reasoningEffort;
     }
-    if (typeof body.autoApprove === "boolean")
+    // An unknown mode leaves the setting alone. autoApprove is the old name
+    // and still maps onto the modes it meant.
+    if (permissions.isMode(body.permissionMode))
     {
-      patch.autoApprove = body.autoApprove;
+      patch.permissionMode = body.permissionMode;
+    }
+    else if (typeof body.autoApprove === "boolean" && body.permissionMode === undefined)
+    {
+      patch.permissionMode = body.autoApprove ? "auto" : "ask";
     }
     if (typeof body.showThinking === "boolean")
     {
@@ -363,7 +389,12 @@ async function handleApi(req, res, url)
       patch.tavilyApiKey = body.tavilyApiKey;
     }
 
+    const before = config.load().permissionMode;
     config.save(patch);
+    if (config.load().permissionMode !== before)
+    {
+      releaseApprovals(config.load().permissionMode);
+    }
     broadcast("config", publicConfig());
     sendJson(res, 200, { ok: true, config: publicConfig() });
     return;
@@ -468,6 +499,7 @@ async function handleApi(req, res, url)
     {
       session: session,
       cfg: cfg,
+      liveConfig: config.load,
       userText: text,
       emit: function (name, data)
       {

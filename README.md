@@ -58,9 +58,18 @@ Configuration is stored under XDG_CONFIG_HOME/oh-my-qwen, or ~/.config/oh-my-qwe
 
 ## Approvals and safety
 
-Listing, reading and searching run immediately. Writing, editing, deleting, bulk replace, build, run, test and arbitrary Bash commands need approval.
+Listing, reading, searching and web search always run immediately. Everything that changes the machine follows the permission mode, chosen next to the message box or in settings:
 
-Auto-approve still raises a card for a command that reaches outside the workspace or rewrites a binary file through the shell. File tools refuse paths that leave the workspace, including through symbolic links. When an approval is denied, later state-changing calls from the same batch are not run either: they were planned on the denied call succeeding, so the model has to re-plan from what actually happened.
+| Mode | Runs without asking | Still asks |
+|---|---|---|
+| 확인 (ask, default) | nothing | every write, edit, delete, build, run, test and command |
+| 편집 자동 (edits) | write, edit, bulk replace and create_dir inside the folder | delete, commands, build, run, test |
+| 자동 (auto) | everything inside the working folder | a command that reaches outside the folder or rewrites a binary file through the shell |
+| 전체 자동 (full) | everything | nothing; choosing it asks for confirmation once |
+
+The mode applies from the next action on, even in the middle of a turn: switching to a more permissive mode also releases an approval card that the new mode would not have shown. The system prompt tells the model which mode it is in; in full mode it is told that nobody checks its actions first. A config saved with the old autoApprove checkbox becomes auto.
+
+In every mode the file tools refuse paths that leave the workspace, including through symbolic links. When an approval is denied, later state-changing calls from the same batch are not run either: they were planned on the denied call succeeding, so the model has to re-plan from what actually happened.
 
 ## Tests
 

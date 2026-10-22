@@ -52,6 +52,12 @@
     <button class="plus-btn" id="btnClear" title="대화 비우기" aria-label="대화 비우기">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l1 2h4v2H4V5h4l1-2zm-3 6h12l-1 12H7L6 9zm3 2v8h2v-8H9zm4 0v8h2v-8h-2z"/></svg>
     </button>
+    <select class="mode-pill" id="selModeQuick" title="권한 모드: 어떤 작업을 묻지 않고 실행할지" aria-label="권한 모드">
+      <option value="ask">🔒 확인</option>
+      <option value="edits">✏️ 편집 자동</option>
+      <option value="auto">⚡ 자동</option>
+      <option value="full">🔥 전체 자동</option>
+    </select>
     <textarea id="input" rows="1" placeholder="메시지를 입력하세요 (Shift+Enter 줄바꿈)"></textarea>
     <button class="send-btn" id="btnSend" disabled>전송</button>
   </footer>
@@ -143,9 +149,15 @@
         <span class="hint" id="tavilyHint">키를 넣으면 모델이 web_search / web_fetch 로 문서와 오류 메시지를 찾아볼 수 있습니다. 키는 tavily.com 에서 발급받습니다.</span>
       </div>
 
-      <label class="toggle">
-        <input type="checkbox" id="chkAutoApprove" />
-        <span>파일 수정/명령 실행 자동 승인</span>
+      <label class="field">
+        <span class="field-label">권한 모드</span>
+        <select id="selPermissionMode">
+            <option value="ask">확인 - 변경 작업마다 묻기</option>
+            <option value="edits">편집 자동 - 파일 수정은 묻지 않음</option>
+            <option value="auto">자동 - 폴더 안 작업은 묻지 않음</option>
+            <option value="full">전체 자동 - 아무것도 묻지 않음</option>
+        </select>
+        <span class="hint" id="permissionHint"></span>
       </label>
       <label class="toggle">
         <input type="checkbox" id="chkShowThinking" />

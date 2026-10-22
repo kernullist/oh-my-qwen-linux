@@ -6,6 +6,7 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const permissions = require("./permissions");
 
 const APP_DIR_NAME = "oh-my-qwen";
 
@@ -44,7 +45,8 @@ const DEFAULTS =
   maxToolRounds: 32,
   idleTimeoutSec: 90,
   firstByteTimeoutSec: 300,
-  autoApprove: false,
+  // ask | edits | auto | full, see src/permissions.js.
+  permissionMode: "ask",
   showThinking: true,
   codingRules: DEFAULT_CODING_RULES,
   systemPrompt: "",
@@ -246,10 +248,8 @@ function sanitize(raw)
   {
     out.tavilyApiKey = raw.tavilyApiKey.trim().slice(0, 200);
   }
-  if (typeof raw.autoApprove === "boolean")
-  {
-    out.autoApprove = raw.autoApprove;
-  }
+  // Before modes there was only autoApprove, which meant what "auto" means now.
+  out.permissionMode = permissions.modeOf(raw);
   if (typeof raw.showThinking === "boolean")
   {
     out.showThinking = raw.showThinking;

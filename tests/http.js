@@ -618,6 +618,126 @@ async function testShutdown(server)
   }
 }
 
+// A stand-in LM Studio: the first request answers with one tool call, every
+// later one with a short text reply.
+function fakeModel(command)
+{
+  const http = require("http");
+  let calls = 0;
+  const server = http.createServer(function (req, res)
+  {
+    let body = "";
+    req.on("data", function (c) { body += c; });
+    req.on("end", function ()
+    {
+      calls++;
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      const chunk = function (delta, finish)
+      {
+        res.write("data: " + JSON.stringify({ choices: [{ index: 0, delta: delta, finish_reason: finish || null }] }) + "\n\n");
+      };
+      if (calls === 1)
+      {
+        chunk({ tool_calls: [{ index: 0, id: "call_1", type: "function",
+          function: { name: "run_command", arguments: JSON.stringify({ command: command }) } }] }, "tool_calls");
+      }
+      else
+      {
+        chunk({ content: "done" }, "stop");
+      }
+      res.end("data: [DONE]\n\n");
+    });
+  });
+  return new Promise(function (resolve)
+  {
+    server.listen(0, "127.0.0.1", function ()
+    {
+      resolve({ server: server, url: "http://127.0.0.1:" + server.address().port, calls: function () { return calls; } });
+    });
+  });
+}
+
+// Collects SSE events until a predicate over the text so far is true.
+function eventStream(port)
+{
+  let text = "";
+  let req = null;
+  const ready = new Promise(function (resolve, reject)
+  {
+    req = http.get({ host: "127.0.0.1", port: port, path: "/api/events", headers: { Host: "127.0.0.1:" + port } },
+      function (res)
+      {
+        res.on("data", function (c) { text += c.toString("utf8"); });
+        resolve();
+      });
+    req.on("error", reject);
+  });
+  return {
+    ready: ready,
+    text: function () { return text; },
+    waitFor: async function (re, ms)
+    {
+      const until = Date.now() + (ms || 10000);
+      while (Date.now() < until)
+      {
+        if (re.test(text))
+        {
+          return true;
+        }
+        await new Promise(function (r) { setTimeout(r, 50); });
+      }
+      return false;
+    },
+    close: function () { req.destroy(); }
+  };
+}
+
+async function testPermissionModes(port)
+{
+  group("permission modes");
+
+  const legacy = await request(port, "POST", "/api/config", { body: { autoApprove: true } });
+  ok("the old autoApprove flag maps to auto", legacy.json && legacy.json.config.permissionMode === "auto",
+    JSON.stringify(legacy.json && legacy.json.config.permissionMode));
+  const bogus = await request(port, "POST", "/api/config", { body: { permissionMode: "yolo" } });
+  ok("an unknown mode leaves the setting alone", bogus.json && bogus.json.config.permissionMode === "auto",
+    JSON.stringify(bogus.json && bogus.json.config.permissionMode));
+
+  fs.mkdirSync(WORK_DIR, { recursive: true });
+  const model = await fakeModel("cat /etc/hostname");
+  const events = eventStream(port);
+  await events.ready;
+
+  try
+  {
+    await request(port, "POST", "/api/workspace", { body: { path: WORK_DIR } });
+    await request(port, "POST", "/api/config",
+      { body: { baseUrl: model.url, model: "fake", permissionMode: "auto" } });
+
+    await request(port, "POST", "/api/chat", { body: { text: "show the hostname" } });
+    const asked = await events.waitFor(/event: approval_request[\s\S]*\/etc\/hostname/, 10000);
+    ok("auto mode still asks for a command that leaves the folder", asked, events.text().slice(-400));
+
+    const switched = await request(port, "POST", "/api/config", { body: { permissionMode: "full" } });
+    ok("the mode can be switched while a card is waiting", switched.json && switched.json.config.permissionMode === "full",
+      switched.text.slice(0, 200));
+
+    const released = await events.waitFor(/event: approval_resolved\ndata: \{[^\n]*"approved":true,"reason":"mode"/, 5000);
+    ok("switching to full releases the waiting card", released, events.text().slice(-500));
+
+    const ran = await events.waitFor(/event: tool_result[\s\S]*cat \/etc\/hostname/, 10000);
+    ok("and the command then runs", ran, events.text().slice(-400));
+    const ended = await events.waitFor(/event: turn_end/, 10000);
+    ok("the turn finishes on its own", ended && model.calls() >= 2, "calls=" + model.calls());
+  }
+  finally
+  {
+    events.close();
+    model.server.close();
+    await request(port, "POST", "/api/config", { body: { permissionMode: "ask", baseUrl: "http://localhost:1234", model: "" } });
+  }
+}
+
 // ---------------------------------------------------------------------------
 
 async function main()
@@ -648,6 +768,7 @@ async function main()
     await testOriginGuard(server.port);
     await testBroadcast(server.port);
     await testHostileBodies(server.port);
+    await testPermissionModes(server.port);
     await testShutdown(server);
   }
   catch (err)
