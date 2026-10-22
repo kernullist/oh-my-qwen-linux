@@ -5,7 +5,7 @@
 // where indentation is the syntax, a batch script to port, and a migration
 // directory whose old files are immutable.
 
-const { check, needs, known, countTool, saidAny } = require("../lib/check");
+const { check, needs, known, countTool, saidAny, powershellCommand } = require("../lib/check");
 const style = require("../lib/style");
 
 // ---------------------------------------------------------------------------
@@ -508,18 +508,22 @@ const batchToPowershell =
       "package.bat was deleted"));
 
     // The real test: PowerShell's own parser has to accept it.
-    if (ps.trim())
+    const shell = powershellCommand();
+    if (ps.trim() && shell)
     {
       const probe = "$errs = $null; " +
         "[System.Management.Automation.Language.Parser]::ParseFile(" +
         "(Resolve-Path 'scripts/package.ps1').Path, [ref]$null, [ref]$errs) | Out-Null; " +
         "if ($errs -and $errs.Count -gt 0) { $errs | ForEach-Object { $_.Message }; exit 1 } " +
         "else { 'PARSE_OK' }";
-      const res = ctx.sh(probe, { timeoutMs: 60000 });
+      const res = process.platform === "win32"
+        ? ctx.sh(probe, { timeoutMs: 60000 })
+        : ctx.sh(shell + " -NoProfile -NonInteractive -Command '" + probe.replace(/'/g, "'\\''") + "'",
+          { timeoutMs: 60000 });
       out.push(check("PowerShell parses the ported script", /PARSE_OK/.test(res.out),
         (res.out + " " + res.err).slice(0, 300)));
     }
-    else
+    else if (!ps.trim())
     {
       out.push(check("PowerShell parses the ported script", false, "nothing to parse"));
     }

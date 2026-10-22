@@ -5,7 +5,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { check, needs, saidAny, toolSaid, countTool } = require("../lib/check");
+const { check, needs, saidAny, toolSaid, countTool, powershellCommand } = require("../lib/check");
 
 // ---------------------------------------------------------------------------
 // A test that never returns
@@ -80,9 +80,12 @@ const hangingTest =
       "final answer does not describe the hang"));
 
     // The whole point of killing the process tree: nothing may survive the turn.
-    const probe = ctx.sh("Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | " +
-      "Where-Object { $_.CommandLine -like '*hang-test.js*' } | Measure-Object | Select-Object -ExpandProperty Count",
-      { timeoutMs: 60000 });
+    // The bracket keeps the probe's own command line from matching itself.
+    const probe = process.platform === "win32"
+      ? ctx.sh("Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | " +
+        "Where-Object { $_.CommandLine -like '*hang-test.js*' } | Measure-Object | Select-Object -ExpandProperty Count",
+        { timeoutMs: 60000 })
+      : ctx.sh("pgrep -fc '[h]ang-test.js' || true", { timeoutMs: 60000 });
     const survivors = parseInt(String(probe.out).trim(), 10);
     out.push(check("no orphan test process survived", survivors === 0,
       "still running: " + probe.out.trim()));
@@ -134,11 +137,16 @@ const utf16Script =
     out.push(check("file is still UTF-16LE", info.encoding === "utf16le", "encoding is now " + info.encoding));
     out.push(check("line endings still CRLF", info.eol === "crlf", "eol is now " + info.eol));
 
-    const run = ctx.sh("powershell -NoProfile -ExecutionPolicy Bypass -File scripts/report.ps1 -Target release",
-      { timeoutMs: 60000 });
-    out.push(check("PowerShell still runs the script and prints Rev 2",
-      run.code === 0 && /Rev 2/.test(run.out),
-      "exit " + run.code + " out=" + JSON.stringify(run.out.slice(0, 160))));
+    // Only checkable where PowerShell exists; on Linux that means pwsh.
+    const shell = powershellCommand();
+    if (shell)
+    {
+      const run = ctx.sh(shell + " -NoProfile -ExecutionPolicy Bypass -File scripts/report.ps1 -Target release",
+        { timeoutMs: 60000 });
+      out.push(check("PowerShell still runs the script and prints Rev 2",
+        run.code === 0 && /Rev 2/.test(run.out),
+        "exit " + run.code + " out=" + JSON.stringify(run.out.slice(0, 160))));
+    }
 
     return out;
   }

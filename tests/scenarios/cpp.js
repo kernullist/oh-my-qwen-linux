@@ -131,7 +131,7 @@ const cmakeFixAndTest =
   tags: ["cpp", "cmake", "build", "test"],
   requires: function ()
   {
-    return needs(["cmake", "ctest", "msvc"]);
+    return needs(["cmake", "ctest", process.platform === "win32" ? "msvc" : "cxx"] );
   },
   setup: async function (dir, fx)
   {
@@ -172,7 +172,7 @@ const cmakeFixAndTest =
     out.push(check("test file was not edited to make it pass", testUnchanged,
       testUnchanged ? "" : "tests/test_stats.cpp changed"));
 
-    const build = ctx.sh("cmake -S . -B verify -DCMAKE_BUILD_TYPE=Debug 2>&1 | Out-Null; cmake --build verify --config Debug 2>&1", { timeoutMs: 300000 });
+    const build = ctx.sh("cmake -S . -B verify -DCMAKE_BUILD_TYPE=Debug >/dev/null 2>&1; cmake --build verify --config Debug 2>&1", { timeoutMs: 300000 });
     out.push(check("independent cmake build succeeds", build.code === 0,
       build.code === 0 ? "" : ("exit " + build.code + "\n" + build.out.split("\n").slice(-12).join("\n"))));
 

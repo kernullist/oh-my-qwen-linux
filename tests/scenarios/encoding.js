@@ -137,15 +137,20 @@ const legacyEncoding =
     const korean = /[가-힣]/.test(headerText);
     out.push(check("korean comment landed in rules.h", korean, korean ? "" : "no hangul in the header"));
 
+    // The BOM is a Windows answer to MSVC's C4819. GCC and Clang read UTF-8
+    // without one, and on Linux the app deliberately does not add it.
+    const bomLabel = process.platform === "win32"
+      ? "rules.h got a UTF-8 BOM so MSVC will not warn C4819"
+      : "rules.h was saved as UTF-8 without a Windows BOM";
     if (korean)
     {
-      out.push(check("rules.h got a UTF-8 BOM so MSVC will not warn C4819",
-        hasBom(ctx.dir, "legacy/rules.h"),
-        "no BOM on a header that now contains hangul"));
+      const bom = hasBom(ctx.dir, "legacy/rules.h");
+      out.push(check(bomLabel, process.platform === "win32" ? bom : !bom,
+        bom ? "a BOM was added on Linux" : "no BOM on a header that now contains hangul"));
     }
     else
     {
-      out.push(check("rules.h got a UTF-8 BOM so MSVC will not warn C4819", false, "skipped, no hangul written"));
+      out.push(check(bomLabel, false, "skipped, no hangul written"));
     }
 
     const cppBuf = fs.readFileSync(path.join(ctx.dir, "legacy/report.cpp"));

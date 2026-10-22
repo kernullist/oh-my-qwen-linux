@@ -44,6 +44,25 @@ function needs(list)
   for (let i = 0; i < list.length; i++)
   {
     const name = list[i];
+    // Any C++ compiler: the CMake scenarios only need one, and on Ubuntu that
+    // is g++ or clang++, never MSVC.
+    if (name === "cxx")
+    {
+      if (!toolchain.detect().cxx)
+      {
+        return "no C++ compiler installed";
+      }
+      continue;
+    }
+    // Python is "python3" on Ubuntu unless python-is-python3 is installed.
+    if (name === "python")
+    {
+      if (!pythonCommand())
+      {
+        return "python not on PATH";
+      }
+      continue;
+    }
     if (name === "msvc")
     {
       const tc = toolchain.detect();
@@ -59,6 +78,25 @@ function needs(list)
     }
   }
   return "";
+}
+
+function pythonCommand()
+{
+  if (hasCommand("python3"))
+  {
+    return "python3";
+  }
+  return hasCommand("python") ? "python" : "";
+}
+
+// PowerShell 7 on Linux is "pwsh"; Windows PowerShell is "powershell".
+function powershellCommand()
+{
+  if (process.platform === "win32")
+  {
+    return "powershell";
+  }
+  return hasCommand("pwsh") ? "pwsh" : "";
 }
 
 // True when the model's visible answer mentions any of the given fragments.
@@ -107,6 +145,8 @@ module.exports =
   known: known,
   needs: needs,
   hasCommand: hasCommand,
+  pythonCommand: pythonCommand,
+  powershellCommand: powershellCommand,
   saidAny: saidAny,
   toolSaid: toolSaid,
   countTool: countTool

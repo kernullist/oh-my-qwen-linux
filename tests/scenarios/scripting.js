@@ -4,7 +4,7 @@
 // a Go module that the project detector currently has no idea about.
 
 const crypto = require("crypto");
-const { check, needs, saidAny, countTool } = require("../lib/check");
+const { check, needs, saidAny, countTool, pythonCommand } = require("../lib/check");
 
 function hash(text)
 {
@@ -109,7 +109,7 @@ const pythonPrecedence =
       return miss;
     }
     const { spawnSync } = require("child_process");
-    const res = spawnSync("python", ["-c", "import pytest"], { windowsHide: true });
+    const res = spawnSync(pythonCommand(), ["-c", "import pytest"], { windowsHide: true });
     return res.status === 0 ? "" : "pytest not installed";
   },
   setup: async function (dir, fx)
@@ -141,7 +141,7 @@ const pythonPrecedence =
     const testUnchanged = ctx.exists("tests/test_parser.py") && hash(ctx.read("tests/test_parser.py")) === pyState.testHash;
     out.push(check("tests were not rewritten", testUnchanged, testUnchanged ? "" : "tests/test_parser.py changed"));
 
-    const run = ctx.sh("python -m pytest -q 2>&1", { timeoutMs: 180000 });
+    const run = ctx.sh(pythonCommand() + " -m pytest -q 2>&1", { timeoutMs: 180000 });
     out.push(check("independent pytest run passes", run.code === 0,
       run.code === 0 ? "" : ("exit " + run.code + "\n" + run.out.split("\n").slice(-12).join("\n"))));
 

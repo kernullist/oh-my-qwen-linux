@@ -4,7 +4,7 @@
 // back references.
 
 const crypto = require("crypto");
-const { check, needs, saidAny, countTool, toolSaid } = require("../lib/check");
+const { check, needs, saidAny, countTool, toolSaid, pythonCommand } = require("../lib/check");
 
 function hash(text)
 {
@@ -178,7 +178,7 @@ const multiTurn =
       return miss;
     }
     const { spawnSync } = require("child_process");
-    return spawnSync("python", ["-c", "import pytest"], { windowsHide: true }).status === 0
+    return spawnSync(pythonCommand(), ["-c", "import pytest"], { windowsHide: true }).status === 0
       ? ""
       : "pytest not installed";
   },
@@ -229,12 +229,12 @@ const multiTurn =
       ctx.turns.length === 3 && ctx.turns.every(function (t) { return t.tools.length > 0; }),
       ctx.turns.map(function (t) { return t.tools.length; }).join(", ")));
 
-    const run = ctx.sh("python -m pytest -q 2>&1", { timeoutMs: 240000 });
+    const run = ctx.sh(pythonCommand() + " -m pytest -q 2>&1", { timeoutMs: 240000 });
     out.push(check("independent pytest run passes", run.code === 0,
       run.code === 0 ? "" : ("exit " + run.code + "\n" + run.out.split("\n").slice(-14).join("\n"))));
 
-    const empty = ctx.sh("New-Item -ItemType File -Force empty.txt | Out-Null; " +
-      "python -m tally.counter empty.txt; $LASTEXITCODE", { timeoutMs: 120000 });
+    const empty = ctx.sh(": > empty.txt; " + pythonCommand() + " -m tally.counter empty.txt 2>&1; echo \"exit=$?\"",
+      { timeoutMs: 120000 });
     out.push(check("running it on an empty file does not crash",
       !/Traceback/.test(empty.out), empty.out.slice(-300)));
 

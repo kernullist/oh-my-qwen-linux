@@ -388,10 +388,10 @@ const oddFilenames =
         /CalculateFrameBudget/.test(ctx.read("src/render pass (v2).cpp")),
       "src/render pass (v2).cpp not updated"));
 
-    // The detected cl command has to quote these names or the build is nonsense.
+    // The detected compiler command has to quote these names or the build is nonsense.
     if (ctx.detected && ctx.detected.build)
     {
-      const quoted = /"[^"]*render pass \(v2\)\.cpp"/.test(ctx.detected.build);
+      const quoted = /"[^"]*render pass \(v2\)\.cpp"|'[^']*render pass \(v2\)\.cpp'/.test(ctx.detected.build);
       out.push(check("the detected build command quotes the spaced filename", quoted,
         ctx.detected.build.slice(0, 240)));
     }
