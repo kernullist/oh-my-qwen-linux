@@ -117,14 +117,17 @@
           <span class="field-label">추론 노력</span>
           <select id="selReasoningEffort">
             <option value="default">모델 기본값</option>
-            <option value="xhigh">높음 (xhigh)</option>
-            <option value="medium">중간 (medium)</option>
+            <option value="none">끄기 (none)</option>
+            <option value="minimal">최소 (minimal)</option>
             <option value="low">낮음 (low)</option>
+            <option value="medium">중간 (medium)</option>
+            <option value="high">높음 (high)</option>
+            <option value="xhigh">매우 높음 (xhigh)</option>
           </select>
         </label>
       </div>
 
-      <span class="hint" id="samplerHint">Qwen thinking 모드 권장값: temperature 0.6 · top_p 0.95 · top_k 20 · presence_penalty 0. '추론 노력'을 낮추면 thinking 소모가 줄어듭니다(미지원 서버에서는 무시됨).</span>
+      <span class="hint" id="samplerHint">Qwen thinking 모드 권장값: temperature 0.6 · top_p 0.95 · top_k 20 · presence_penalty 0. '추론 노력'은 LM Studio 0.4.8 이상에서 reasoning_effort로 전달됩니다. Qwen3.8처럼 켜기/끄기만 지원하는 모델은 '끄기'만 효과가 있습니다.</span>
 
       <span class="hint" id="contextHint"></span>
 

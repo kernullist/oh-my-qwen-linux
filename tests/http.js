@@ -300,8 +300,15 @@ async function testConfig(port)
   const badEffort = await request(port, "POST", "/api/config", { body: { reasoningEffort: "maximum" } });
   ok("an unknown reasoning effort is never stored",
     badEffort.code === 200 && badEffort.json &&
-    ["default", "xhigh", "medium", "low"].indexOf(badEffort.json.config.reasoningEffort) >= 0,
+    badEffort.json.config.reasoningEffort === "medium",
     JSON.stringify(badEffort.json && badEffort.json.config).slice(0, 200));
+
+  // "none" is the value that actually switches Qwen3.8's thinking off in LM
+  // Studio, so the settings screen has to be able to store it.
+  const offEffort = await request(port, "POST", "/api/config", { body: { reasoningEffort: "none" } });
+  ok("reasoning can be switched off",
+    offEffort.code === 200 && offEffort.json && offEffort.json.config.reasoningEffort === "none",
+    JSON.stringify(offEffort.json && offEffort.json.config).slice(0, 200));
 
   // JSON.stringify turns NaN into null, so a cleared field used to arrive as
   // null and Number(null) === 0 rewrote it to the bottom of its clamp range.

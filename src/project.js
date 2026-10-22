@@ -146,6 +146,32 @@ function hasCommand(name)
   return false;
 }
 
+// Whether "python -m pytest" can work at all. Detection runs on every turn and
+// after every file change, so the answer is cached for a minute.
+const pytestCache = new Map();
+
+function pytestAvailable(py)
+{
+  const hit = pytestCache.get(py);
+  if (hit && Date.now() - hit.at < 60000)
+  {
+    return hit.ok;
+  }
+
+  let ok = false;
+  try
+  {
+    const res = spawnSync(py, ["-c", "import pytest"], { stdio: "ignore", timeout: 10000 });
+    ok = res.status === 0;
+  }
+  catch (err)
+  {
+    ok = false;
+  }
+  pytestCache.set(py, { ok: ok, at: Date.now() });
+  return ok;
+}
+
 // Newest executable produced by a build, so "run" has something to point at.
 function findExecutable(root)
 {
@@ -174,14 +200,18 @@ function findExecutable(root)
 
       if (e.isDirectory())
       {
-        if (e.name === "node_modules" || e.name === ".git" || e.name.startsWith("."))
+        // CMakeFiles holds the compiler probes CMake builds while configuring
+        // (CMakeDetermineCompilerABI_C.bin is an executable ELF), and one of
+        // them could be newer than the program that was actually wanted.
+        if (e.name === "node_modules" || e.name === ".git" || e.name === "CMakeFiles" || e.name.startsWith("."))
         {
           continue;
         }
         scan(full, level + 1);
       }
-      else if (e.isFile())
+      else if (e.isFile() && !/\.(so(\.\d+)*|o|a)$/i.test(e.name))
       {
+        // Shared libraries are ELF files with the execute bit set too.
         try
         {
           const stat = fs.statSync(full);
@@ -541,10 +571,11 @@ function detect(root)
   {
     const pkg = readJson(root, "package.json") || {};
     const scripts = pkg.scripts || {};
-    const testFiles = findByExt(root, [".test.js", ".test.mjs"], 1, 2);
-    const hasNodeTests = testFiles.length > 0 || findByExt(root, [".js"], 60, 2).some(function (f)
+    // findByExt matches path.extname, which is ".js" for "a.test.js", so the
+    // test-file shape has to be checked on the names it returns.
+    const hasNodeTests = findByExt(root, [".js", ".mjs", ".cjs"], 200, 2).some(function (f)
     {
-      return /\.test\.js$|(^|\/)test[s]?\//i.test(f);
+      return /\.test\.[cm]?js$|(^|\/)tests?\//i.test(f);
     });
 
     return {
@@ -570,6 +601,10 @@ function detect(root)
     nameSet.has("setup.py") || nameSet.has("setup.cfg") || nameSet.has("pipfile") ||
     nameSet.has("poetry.lock") || nameSet.has("environment.yml");
 
+  // Ubuntu ships python3 and no "python" unless python-is-python3 is
+  // installed, so a hard-coded "python" failed every run and test with 127.
+  const py = hasCommand("python3") || !hasCommand("python") ? "python3" : "python";
+
   function pythonProject()
   {
     const testish = pyFiles.filter(function (f)
@@ -588,11 +623,16 @@ function detect(root)
       tasks:
       {
         build: { command: null, needsMsvc: false },
-        test: { command: testish.length > 0 ? "python -m pytest -q" : null, needsMsvc: false },
-        run: { command: entry ? "python " + shellQuote(entry) : null, needsMsvc: false }
+        test: { command: testish.length > 0 ? py + " -m pytest -q" : null, needsMsvc: false },
+        run: { command: entry ? py + " " + shellQuote(entry) : null, needsMsvc: false }
       },
       notes: testish.length > 0
-        ? ["If pytest is not installed, fall back to: python -m unittest discover"]
+        ? (pytestAvailable(py)
+          ? ["If a test needs a plugin that is missing, say so instead of installing packages."]
+          : ["pytest is NOT installed for " + py + ", so test_project will fail with \"No module named pytest\". " +
+            "Do not try pip, ensurepip or apt: Ubuntu blocks installing into the system Python and the user did not ask " +
+            "for it. Run unittest-style tests with " + py + " -m unittest discover, call plain test_* functions from a " +
+            "short " + py + " script, and tell the user pytest is missing."])
         : ["No test files were found (test_*.py or tests/)."]
     };
   }
@@ -723,6 +763,15 @@ const DIAG_PATTERNS =
   // happens to contain a colon and the word error.
   { re: /^\s*(?:\d+>)?((?:[A-Za-z]:)?[^:]*?)\s*:\s*(?:command line\s+)?(fatal error|error|warning)\s+([A-Za-z]+\d+)\s*:?\s*(.*)$/i,
     file: 1, sev: 2, code: 3, msg: 4 },
+  // GNU ld and the driver around it. These carry no "error:" of the gcc shape:
+  //   main.c:(.text+0x9): undefined reference to `add'
+  //   /usr/bin/ld: cannot find -lfoo: No such file or directory
+  //   collect2: error: ld returned 1 exit status
+  { re: /^\s*(?:\/\S*\/)?ld(?:\.\w+)?:\s*(?:(\S+?):\s*)?((?:.*?)(?:undefined reference to|cannot find|multiple definition of).*)$/, file: 1, sev: null, msg: 2 },
+  { re: /^\s*(\S+?):\(\.\w+[^)]*\):\s*(undefined reference to.*|multiple definition of.*)$/, file: 1, sev: null, msg: 2 },
+  { re: /^\s*(?:collect2|clang(?:\+\+)?):\s*(error):\s*(.*)$/, sev: 1, msg: 2 },
+  // CMake Error at CMakeLists.txt:12 (add_executable):
+  { re: /^\s*CMake (Error|Warning)(?: \(dev\))? at (.+?):(\d+)/, file: 2, line: 3, sev: 1, msg: null },
   // MSBuild summary lines already covered above; python tracebacks:
   { re: /^\s*File "(.+?)", line (\d+)/, file: 1, line: 2, sev: null, msg: null }
 ];
@@ -730,7 +779,7 @@ const DIAG_PATTERNS =
 // Unresolved externals are the one build failure this model consistently reads
 // as an environment problem. It is almost never one: the declaration was seen
 // and the definition was not handed to the linker.
-const LINK_HINT_RE = /\bLNK(2001|2019|1120)\b/;
+const LINK_HINT_RE = /\bLNK(2001|2019|1120)\b|undefined reference to|ld returned 1 exit status|Undefined symbols for architecture/;
 
 // Extracts compiler/test diagnostics so a huge log becomes a short verdict.
 function summarizeOutput(text)

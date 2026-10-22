@@ -223,42 +223,78 @@ function recoverInlineToolCall(text)
     return null;
   }
 
-  const OPEN = "<tool_call>";
-  const CLOSE = "</tool_call>";
-  const open = text.indexOf(OPEN);
-  if (open < 0)
+  // Qwen3-Coder style templates sometimes drop the <tool_call> wrapper and
+  // leave only the <function=...> block, so accept that shape as well.
+  let OPEN = "<tool_call>";
+  let CLOSE = "</tool_call>";
+  if (text.indexOf(OPEN) < 0)
   {
-    return null;
-  }
-
-  const close = text.indexOf(CLOSE, open);
-  if (close < 0)
-  {
-    // Cut off by the token limit. The arguments are incomplete, so running it
-    // could truncate a file instead of editing it. Take the debris out of the
-    // visible answer and let the caller report a truncated call.
-    return { content: text.slice(0, open).trim(), call: null, truncated: true };
-  }
-
-  const block = text.slice(open + OPEN.length, close).trim();
-  const rest = (text.slice(0, open) + text.slice(close + CLOSE.length)).trim();
-  const parsed = parseJsonToolCall(block) || parseXmlToolCall(block);
-
-  if (!parsed)
-  {
-    return null;
-  }
-
-  return {
-    content: rest,
-    call:
+    // Only when the block ends the reply: prose that merely shows the syntax
+    // in an explanation must not be executed.
+    if (!/<function=[A-Za-z0-9_.-]+\s*>/.test(text) || !/<\/function>\s*$/.test(text))
     {
-      id: "call_inline_" + Date.now(),
+      return null;
+    }
+    OPEN = "<function=";
+    CLOSE = "</function>";
+  }
+
+  // A model that wants to read three files emits three blocks. Taking only the
+  // first one ran one read and left the other two in the answer as XML debris.
+  const calls = [];
+  let rest = "";
+  let cursor = 0;
+  let truncated = false;
+
+  for (;;)
+  {
+    const open = text.indexOf(OPEN, cursor);
+    if (open < 0)
+    {
+      rest += text.slice(cursor);
+      break;
+    }
+
+    rest += text.slice(cursor, open);
+    const close = text.indexOf(CLOSE, open);
+    if (close < 0)
+    {
+      // Cut off by the token limit. The arguments are incomplete, so running
+      // it could truncate a file instead of editing it. Take the debris out of
+      // the visible answer and let the caller report a truncated call.
+      truncated = true;
+      break;
+    }
+
+    const block = OPEN === "<function="
+      ? text.slice(open, close + CLOSE.length)
+      : text.slice(open + OPEN.length, close).trim();
+    const parsed = parseJsonToolCall(block) || parseXmlToolCall(block);
+    if (!parsed)
+    {
+      return null;
+    }
+
+    calls.push({
+      id: "call_inline_" + Date.now() + "_" + calls.length,
       type: "function",
       function: { name: parsed.name, arguments: parsed.arguments }
-    }
-  };
+    });
+    cursor = close + CLOSE.length;
+  }
+
+  if (calls.length === 0)
+  {
+    return truncated ? { content: rest.trim(), call: null, calls: [], truncated: true } : null;
+  }
+
+  // Complete calls before a cut-off one are still whole and safe to run; the
+  // cut-off one is dropped, and the model sees only the calls that ran.
+  return { content: rest.trim(), call: calls[0], calls: calls, truncated: truncated };
 }
+
+// The levels LM Studio's /v1/chat/completions accepts. Anything else is a 400.
+const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
 
 // Non-standard request fields this client may add. A server that validates
 // strictly names the offending field in its 400 body instead of ignoring it.
@@ -382,14 +418,20 @@ async function streamChat(opts, onEvent)
     body.presence_penalty = opts.presencePenalty;
   }
 
-  // Lowering the reasoning effort is the lever against an xhigh model that
-  // spends the whole token budget thinking. Sent both ways because vLLM/sglang
-  // read the top-level field and chat-template-based servers read the kwargs;
-  // a server that knows neither field ignores both.
-  if (opts.reasoningEffort === "medium" || opts.reasoningEffort === "low")
+  // Lowering the reasoning effort is the lever against a model that spends the
+  // whole token budget thinking. LM Studio 0.4.8+ reads the top-level field and
+  // accepts none, minimal, low, medium, high and xhigh. Measured against
+  // Qwen3.8-27B, whose LM Studio capabilities list reasoning as on/off only:
+  // "none" really removes the thinking block (0 reasoning tokens) while every
+  // other level behaves like "on". The kwargs copy is for llama.cpp, vLLM and
+  // sglang, which hand it to the chat template; Qwen templates switch thinking
+  // off through enable_thinking rather than an effort level.
+  if (REASONING_EFFORTS.indexOf(opts.reasoningEffort) >= 0)
   {
     body.reasoning_effort = opts.reasoningEffort;
-    body.chat_template_kwargs = { reasoning_effort: opts.reasoningEffort };
+    body.chat_template_kwargs = opts.reasoningEffort === "none"
+      ? { enable_thinking: false, reasoning_effort: "none" }
+      : { reasoning_effort: opts.reasoningEffort };
   }
 
   if (Array.isArray(opts.tools) && opts.tools.length > 0)
@@ -468,7 +510,12 @@ async function streamChat(opts, onEvent)
       }
       catch (err)
       {
-        // keep the raw text
+        // An HTML error page says nothing useful in its markup; keep the text.
+        if (/^\s*<!DOCTYPE|^\s*<html/i.test(text))
+        {
+          detail = text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300) ||
+            "the server returned an HTML error page";
+        }
       }
       throw new Error("LM Studio request failed (HTTP " + res.status + "): " + detail);
     }
@@ -657,7 +704,7 @@ async function streamChat(opts, onEvent)
     const recovered = recoverInlineToolCall(content);
     if (recovered && recovered.call)
     {
-      cleaned = [recovered.call];
+      cleaned = recovered.calls;
       content = recovered.content;
       finishReason = "tool_calls";
     }
@@ -685,6 +732,7 @@ module.exports =
   friendlyError: friendlyError,
   listModels: listModels,
   streamChat: streamChat,
+  REASONING_EFFORTS: REASONING_EFFORTS,
   // Exported for the regression tests: a template leaking its tool call into
   // the answer text is a real failure mode worth pinning down.
   recoverInlineToolCall: recoverInlineToolCall

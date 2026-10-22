@@ -331,7 +331,9 @@ async function handleApi(req, res, url)
     applyNumber("idleTimeoutSec");
     applyNumber("firstByteTimeoutSec");
 
-    if (typeof body.reasoningEffort === "string")
+    // An unknown value means "leave it unchanged", the same rule as the
+    // numeric fields; letting it through made sanitize() reset it to default.
+    if (typeof body.reasoningEffort === "string" && config.REASONING_EFFORTS.indexOf(body.reasoningEffort) >= 0)
     {
       patch.reasoningEffort = body.reasoningEffort;
     }
@@ -397,8 +399,10 @@ async function handleApi(req, res, url)
     config.pushRecentWorkspace(resolved);
 
     const session = sessionStore.get(resolved);
-    broadcast("workspace", { workspace: workspaceInfo(), config: publicConfig(), transcript: session.transcript });
-    sendJson(res, 200, { ok: true, workspace: workspaceInfo(), config: publicConfig(), transcript: session.transcript });
+    broadcast("workspace", { workspace: workspaceInfo(), config: publicConfig(), transcript: session.transcript,
+      busy: session.busy });
+    sendJson(res, 200, { ok: true, workspace: workspaceInfo(), config: publicConfig(), transcript: session.transcript,
+      busy: session.busy });
     return;
   }
 
@@ -443,8 +447,11 @@ async function handleApi(req, res, url)
       }
     }).catch(function (err)
     {
-      broadcast("notice", { id: "err_" + Date.now(), kind: "notice", level: "error", text: "내부 오류: " + err.message });
-      broadcast("turn_end", { stopReason: "error" });
+      // Scoped to the room like every other turn event, or a failure in one
+      // folder's turn would show up in whatever room is open.
+      broadcast("notice", { id: "err_" + Date.now(), kind: "notice", level: "error", text: "내부 오류: " + err.message },
+        session.workspace);
+      broadcast("turn_end", { stopReason: "error" }, session.workspace);
     });
     return;
   }

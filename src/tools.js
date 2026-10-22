@@ -2816,7 +2816,8 @@ function runShell(root, command, timeoutMs, signal)
         cwd: root,
         detached: !isWin,
         windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"]
+        stdio: ["ignore", "pipe", "pipe"],
+        env: isWin ? process.env : shellEnv()
       });
     }
     catch (err)
@@ -2921,11 +2922,49 @@ function runShell(root, command, timeoutMs, signal)
       });
     });
 
-    child.on("close", function (code)
+    // "close" waits for every holder of the pipes, and a job the command put in
+    // the background ("./server &", "nohup ... &") inherits them. The shell
+    // itself exited long ago, but the call sat there until the job ended or the
+    // timeout killed it, and then reported a successful command as a timeout.
+    // So once the shell has exited, give the pipes a moment to drain and then
+    // stop listening; the background job is left running, as asked.
+    let exitTimer = null;
+    child.on("exit", function (code, sig)
     {
+      exitTimer = setTimeout(function ()
+      {
+        try
+        {
+          child.stdout.destroy();
+          child.stderr.destroy();
+        }
+        catch (err)
+        {
+          // already closed
+        }
+        settle(
+        {
+          code: code,
+          signal: sig || null,
+          stdout: decodeOutput(outSink.join()),
+          stderr: decodeOutput(errSink.join()),
+          timedOut: timedOut,
+          cancelled: cancelled,
+          detachedOutput: true
+        });
+      }, BACKGROUND_GRACE_MS);
+    });
+
+    child.on("close", function (code, sig)
+    {
+      if (exitTimer)
+      {
+        clearTimeout(exitTimer);
+      }
       settle(
       {
         code: code,
+        signal: sig || null,
         stdout: decodeOutput(outSink.join()),
         stderr: decodeOutput(errSink.join()),
         timedOut: timedOut,
@@ -2933,6 +2972,77 @@ function runShell(root, command, timeoutMs, signal)
       });
     });
   });
+}
+
+const BACKGROUND_GRACE_MS = 1500;
+
+// Every run_command is non-interactive and has no terminal, so anything that
+// would stop to ask (a git credential prompt, a pager, apt asking to confirm)
+// must fail fast instead of waiting for the timeout.
+function shellEnv()
+{
+  return Object.assign({}, process.env,
+  {
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_PAGER: "cat",
+    PAGER: "cat",
+    DEBIAN_FRONTEND: "noninteractive"
+  });
+}
+
+// A program that crashes on Linux is killed by a signal. Either the shell
+// reports it as 128+N, or, when Bash execs the last command of a -c string
+// directly, the process itself dies and Node reports no code at all, only the
+// signal. Both used to come out as "exit code: unknown" with no output, which
+// told the model nothing about a segfault.
+const SIGNAL_NAMES =
+{
+  SIGSEGV: "segmentation fault - invalid memory access (crash)",
+  SIGABRT: "aborted - abort(), a failed assert, or the C library detected heap corruption (crash)",
+  SIGFPE: "floating point exception - usually an integer division by zero (crash)",
+  SIGILL: "illegal instruction (crash)",
+  SIGBUS: "bus error - misaligned access or a truncated mapped file (crash)",
+  SIGTRAP: "trace/breakpoint trap (crash)",
+  SIGKILL: "killed - by the timeout, the user, or the kernel OOM killer",
+  SIGTERM: "terminated",
+  SIGPIPE: "broken pipe - the reader went away",
+  SIGINT: "interrupted"
+};
+
+const SIGNAL_NUMBERS = { 4: "SIGILL", 5: "SIGTRAP", 6: "SIGABRT", 7: "SIGBUS", 8: "SIGFPE", 9: "SIGKILL",
+  11: "SIGSEGV", 13: "SIGPIPE", 15: "SIGTERM", 2: "SIGINT" };
+
+function describeSignal(code, sig)
+{
+  let name = sig || null;
+  if (!name && Number.isInteger(code) && code > 128 && code < 160)
+  {
+    name = SIGNAL_NUMBERS[code - 128] || null;
+  }
+  if (!name || !SIGNAL_NAMES[name])
+  {
+    return null;
+  }
+  return name + " " + SIGNAL_NAMES[name];
+}
+
+// What the verdict line says for a process that ended.
+function exitStatus(res)
+{
+  if (process.platform === "win32")
+  {
+    return describeExitCode(res.code);
+  }
+  return describeSignal(res.code, res.signal);
+}
+
+function exitLabel(res)
+{
+  if (res.code !== null && res.code !== undefined)
+  {
+    return String(res.code);
+  }
+  return res.signal ? ("signal " + res.signal) : "unknown";
 }
 
 // ---------------------------------------------------------------------------
@@ -3107,7 +3217,7 @@ async function runProjectTask(root, taskName, args, signal)
       res.stderr = stripMsvcPreamble(res.stderr);
     }
 
-    const status = describeExitCode(res.code);
+    const status = exitStatus(res);
     lastCode = res.code;
     combined += res.stdout + "\n" + res.stderr + "\n";
     lastStepOutput = (res.stdout + "\n" + res.stderr).trim();
@@ -3115,7 +3225,7 @@ async function runProjectTask(root, taskName, args, signal)
     parts.push("[" + step.label + "] " + commandText);
     parts.push(res.timedOut
       ? ("  killed after " + Math.round(timeoutMs / 1000) + "s timeout")
-      : ("  exit code: " + (res.code === null ? "unknown" : res.code) + (status ? "  =>  " + status : "")));
+      : ("  exit code: " + exitLabel(res) + (status ? "  =>  " + status : "")));
 
     if (res.timedOut)
     {
@@ -3175,8 +3285,9 @@ async function runProjectTask(root, taskName, args, signal)
     parts.push("--- unresolved symbol at link time ---");
     parts.push("A declaration was found and its definition was not. This is a project wiring problem, " +
       "not a broken toolchain: check that every source file defining the missing symbol is listed in the " +
-      "target that needs it (add_executable / target_sources for CMake, ClCompile for a .vcxproj), that a " +
-      "C function used from C++ is declared extern \"C\", and that any library it needs is linked. " +
+      "target that needs it (add_executable / target_sources for CMake, the object list of a Makefile rule), " +
+      "that a C function used from C++ is declared extern \"C\", and that any library it needs is linked " +
+      "(target_link_libraries, or -l flags placed after the objects that use them on a gcc command line). " +
       "Do not conclude the environment is at fault before the source list has been checked.");
   }
 
@@ -3255,10 +3366,17 @@ async function toolRunCommand(root, args, signal)
   const seconds = Math.round(timeoutMs / 100) / 10;
   const parts = [];
   parts.push("$ " + command);
-  const status = describeExitCode(res.code);
+  const status = exitStatus(res);
   parts.push(res.timedOut
     ? ("killed after " + seconds + "s timeout")
-    : ("exit code: " + (res.code === null ? "unknown" : res.code) + (status ? "  =>  " + status : "")));
+    : ("exit code: " + exitLabel(res) + (status ? "  =>  " + status : "")));
+
+  if (res.detachedOutput)
+  {
+    parts.push("note: the shell finished, but a process it started in the background still holds the output, " +
+      "so it is left running and its later output is not captured. Redirect its output to a log file " +
+      "(cmd > app.log 2>&1 &) to read it later, and stop it (kill %1, pkill -f) when you are done.");
+  }
 
   if (status && /crash/i.test(status))
   {
@@ -3266,9 +3384,9 @@ async function toolRunCommand(root, args, signal)
     lines.push("hint: the program did not exit normally, it crashed. Any output above stopped at the crash point, " +
       "so a successful compile says nothing about this.");
 
-    if (/ACCESS_VIOLATION/.test(status))
+    if (/ACCESS_VIOLATION|SIGSEGV|SIGBUS/.test(status))
     {
-      lines.push("ACCESS_VIOLATION usually means one of: a pointer that was never assigned, use after delete, " +
+      lines.push("An invalid memory access (SIGSEGV, ACCESS_VIOLATION) usually means one of: a pointer that was never assigned, use after delete, " +
         "an index past the end of a buffer, or an allocation whose size computed to 0. " +
         "Check every allocation size and growth step (capacity * 2 is still 0 when capacity starts at 0), " +
         "and check that each container's first insertion actually allocates storage. " +
@@ -3277,6 +3395,15 @@ async function toolRunCommand(root, args, signal)
     else if (/STACK_OVERFLOW/.test(status))
     {
       lines.push("STACK_OVERFLOW points at unbounded recursion or a huge stack local; look for a base case that never fires.");
+    }
+    else if (/SIGABRT/.test(status))
+    {
+      lines.push("SIGABRT comes from abort(): a failed assert() (its message is on stderr), an uncaught C++ exception, " +
+        "or glibc detecting a double free or heap corruption. Building with -fsanitize=address,undefined -g names the exact line.");
+    }
+    else if (/SIGFPE/.test(status))
+    {
+      lines.push("SIGFPE on integer code is a division or modulo by zero (or INT_MIN / -1); check every divisor.");
     }
     else if (/HEAP_CORRUPTION|STACK_BUFFER_OVERRUN/.test(status))
     {
@@ -3323,7 +3450,7 @@ async function toolRunCommand(root, args, signal)
     ok: res.code === 0 && !res.timedOut,
     summary: res.timedOut
       ? ("timeout " + seconds + "s")
-      : (status ? ("crash " + status.split(" ")[0]) : ("exit " + (res.code === null ? "?" : res.code))),
+      : (status && /crash/i.test(status) ? ("crash " + status.split(" ")[0]) : ("exit " + exitLabel(res))),
     text: parts.join("\n")
   };
 }
@@ -3542,7 +3669,7 @@ const SPECS =
         properties:
         {
           extra_args: { type: "string", description: "Extra arguments appended to the detected build command, for example --config Release." },
-          timeout_ms: { type: "integer", description: "Timeout in milliseconds. Default 600000." }
+          timeout_ms: { type: "integer", description: "Timeout in milliseconds. Default 300000, maximum 1800000." }
         },
         required: []
       }
@@ -3560,7 +3687,7 @@ const SPECS =
         properties:
         {
           args: { type: "string", description: "Arguments passed to the program." },
-          timeout_ms: { type: "integer", description: "Timeout in milliseconds. Default 600000." }
+          timeout_ms: { type: "integer", description: "Timeout in milliseconds. Default 300000, maximum 1800000." }
         },
         required: []
       }
@@ -3578,7 +3705,7 @@ const SPECS =
         properties:
         {
           filter: { type: "string", description: "Extra arguments for the test runner, for example a name filter." },
-          timeout_ms: { type: "integer", description: "Timeout in milliseconds. Default 600000." }
+          timeout_ms: { type: "integer", description: "Timeout in milliseconds. Default 300000, maximum 1800000." }
         },
         required: []
       }
@@ -3603,6 +3730,57 @@ const SPECS =
     }
   }
 ];
+
+// Brings argument values in line with the schema. Qwen's XML tool call form
+// carries every value as text, both when LM Studio parses it and when the
+// inline fallback recovers it from the answer, so recursive arrives as "false",
+// and "false" is truthy: delete_path would have deleted a whole tree and
+// replace_in_files would have run a dry run for real. Only booleans and
+// integers are touched, and only from unambiguous text.
+const SPEC_PROPS = new Map(SPECS.map(function (spec)
+{
+  return [spec.function.name, spec.function.parameters.properties || {}];
+}));
+
+function normalizeArgs(name, args)
+{
+  const props = SPEC_PROPS.get(name);
+  if (!props || !args || typeof args !== "object" || Array.isArray(args))
+  {
+    return args;
+  }
+
+  const out = Object.assign({}, args);
+  const keys = Object.keys(out);
+  for (let i = 0; i < keys.length; i++)
+  {
+    const key = keys[i];
+    const prop = props[key];
+    const value = out[key];
+    if (!prop || typeof value !== "string")
+    {
+      continue;
+    }
+
+    const text = value.trim();
+    if (prop.type === "boolean")
+    {
+      if (/^(true|1|yes)$/i.test(text))
+      {
+        out[key] = true;
+      }
+      else if (/^(false|0|no|)$/i.test(text))
+      {
+        out[key] = false;
+      }
+    }
+    else if (prop.type === "integer" && /^-?\d+$/.test(text))
+    {
+      out[key] = parseInt(text, 10);
+    }
+  }
+  return out;
+}
 
 // Short human-facing label shown in the chat bubble for a tool call.
 function describeCall(name, args)
@@ -3705,7 +3883,7 @@ async function execute(root, name, args, signal, limits)
   let result = null;
   try
   {
-    result = await handler(root, args || {}, signal);
+    result = await handler(root, normalizeArgs(name, args || {}), signal);
   }
   catch (err)
   {
@@ -3763,6 +3941,7 @@ module.exports =
   execute: execute,
   isMutating: isMutating,
   describeCall: describeCall,
+  normalizeArgs: normalizeArgs,
   resolveInside: resolveInside,
   outsidePaths: outsidePaths,
   binaryWrites: binaryWrites,

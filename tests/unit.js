@@ -90,8 +90,11 @@ function testHistoryTrimming()
   const kept = agent.trimHistory(conversation, budget);
 
   ok("an oversized tool result does not wipe the conversation", kept.length > 0, "history came back empty");
+  // The user message is part of the request even when the tool result is what
+  // had to shrink: Qwen templates refuse a request without one.
   ok("the request stays paired with its tool result",
-    kept.length >= 2 && kept[0].role === "assistant" && kept[kept.length - 1].role === "tool",
+    kept.length >= 3 && kept[0].role === "user" && kept[1].role === "assistant" &&
+      kept[kept.length - 1].role === "tool",
     JSON.stringify(kept.map(function (m) { return m.role; })));
 
   const toolMsg = kept.filter(function (m) { return m.role === "tool"; })[0];
@@ -2100,6 +2103,14 @@ async function main()
   await testLongLineExcerpts(base);
   testConfigurePrerequisite(base);
   testBaselineJudging();
+  testRequestAnchor();
+  testLiveReasoning();
+  testTokenCalibration();
+  testWireSafeArguments();
+  testArgumentTypes();
+  testInlineRecoveryShapes();
+  await testShellEndings(base);
+  testLinuxDetection(base);
 
   fixture.rmrf(base);
 
@@ -2124,6 +2135,225 @@ async function main()
 
   process.stdout.write("\n" + (results.length - failed) + "/" + results.length + " checks passed\n");
   process.exit(failed > 0 ? 1 : 0);
+}
+
+// A long turn's own tool results pushed the request that started it out of the
+// window, and a Qwen template answers a request without a user message with a
+// Jinja exception: "No user query found in messages". The whole round failed.
+function testRequestAnchor()
+{
+  group("request anchor");
+
+  const conversation = [{ role: "user", content: "REQUEST-MARKER fix the parser" }];
+  for (let i = 0; i < 12; i++)
+  {
+    conversation.push(toolCallMessage("r" + i, "read_file"));
+    conversation.push({ role: "tool", tool_call_id: "r" + i, name: "read_file", content: "z".repeat(6000) });
+  }
+
+  const trimmed = agent.trimHistoryDetailed(conversation, 6000);
+  const kept = trimmed.messages;
+  ok("the request survives a turn that outgrew the budget",
+    kept.length > 0 && kept[0].role === "user" && kept[0].content.indexOf("REQUEST-MARKER") === 0,
+    JSON.stringify(kept.map(function (m) { return m.role; })));
+  ok("the model is told steps were dropped", /earlier step\(s\)/.test(kept[0].content), kept[0].content.slice(-200));
+  ok("the tail after it starts on a whole round", kept.length > 1 && kept[1].role === "assistant",
+    JSON.stringify(kept.slice(0, 3).map(function (m) { return m.role; })));
+  ok("it still fits", tokensOf(kept) <= 6000, tokensOf(kept));
+
+  // A runtime nudge is a user message too, but it is not the task.
+  const nudged = conversation.concat([{ role: "user", content: "[runtime] call test_project now" }]);
+  nudged.push(toolCallMessage("t1", "test_project"));
+  nudged.push({ role: "tool", tool_call_id: "t1", name: "test_project", content: "ok" });
+  const keptNudged = agent.trimHistoryDetailed(nudged, 6000).messages;
+  ok("a nudge in the window is enough for the template",
+    keptNudged.some(function (m) { return m.role === "user"; }), "no user message");
+
+  const small = agent.trimHistoryDetailed(conversation.slice(0, 3), 6000);
+  eq("a history that fits is left alone", small.messages.length, 3);
+}
+
+// A reply cut off at max_tokens leaves half a JSON object in tool_calls, and
+// LM Studio answers every later request that carries it with HTTP 500.
+function testWireSafeArguments()
+{
+  group("tool call arguments on the wire");
+
+  const call = function (args)
+  {
+    return { role: "assistant", content: "", tool_calls: [{ id: "c", type: "function",
+      function: { name: "write_file", arguments: args } }] };
+  };
+
+  const cut = agent.wireSafe([call("{\"path\":\"a.ps1\",\"content\":\"abc")]);
+  eq("truncated arguments go out as an empty object", cut[0].tool_calls[0].function.arguments, "{}");
+
+  const twice = agent.wireSafe([call(JSON.stringify(JSON.stringify({ path: "a" })))]);
+  eq("double-encoded arguments go out as the object", twice[0].tool_calls[0].function.arguments, "{\"path\":\"a\"}");
+
+  const good = [call("{\"path\": \"a\"}")];
+  ok("valid arguments are left exactly as written", agent.wireSafe(good)[0] === good[0], "copied");
+
+  const stored = [call("{\"path\":")];
+  agent.wireSafe(stored);
+  eq("the stored history is not modified", stored[0].tool_calls[0].function.arguments, "{\"path\":");
+}
+
+// chars/3 undercounts code badly, so the budget follows what the server
+// actually counted once it has said so.
+function testTokenCalibration()
+{
+  group("token calibration");
+
+  const cfg = { contextTokens: 16000, maxTokens: 2048 };
+  const plain = agent.historyBudget(cfg, "system", 2048, 0);
+  const dense = agent.historyBudget(cfg, "system", 2048, 1.8);
+  ok("a dense tokenizer shrinks the history budget", dense < plain * 0.7, plain + " -> " + dense);
+  ok("the real request then fits the context",
+    (dense + agent.estimateTokens("system") + agent.toolSchemaTokens()) * 1.8 + 2048 <= cfg.contextTokens, dense);
+
+  eq("no usage keeps the previous ratio", agent.observeTokenRatio(1.4, null, 1000), 1.4);
+  eq("the first measurement is taken as it is", agent.observeTokenRatio(0, { prompt_tokens: 1800 }, 1000), 1.8);
+  eq("later ones are averaged in", agent.observeTokenRatio(1.8, { prompt_tokens: 1000 }, 1000), 1.4);
+  eq("an absurd ratio is clamped", agent.observeTokenRatio(0, { prompt_tokens: 90000 }, 1000), 3);
+}
+
+// Qwen3.x thinking templates render reasoning_content only after the newest
+// user message. Kept there it carries the plan across tool rounds; anywhere
+// else it is budget the template throws away.
+function testLiveReasoning()
+{
+  group("interleaved reasoning");
+
+  const messages =
+  [
+    { role: "user", content: "old" },
+    Object.assign(toolCallMessage("o1", "read_file"), { reasoning_content: "OLD-THOUGHT" }),
+    { role: "tool", tool_call_id: "o1", name: "read_file", content: "x" },
+    { role: "user", content: "new" },
+    Object.assign(toolCallMessage("n1", "read_file"), { reasoning_content: "NEW-THOUGHT" }),
+    { role: "tool", tool_call_id: "n1", name: "read_file", content: "y" }
+  ];
+
+  const live = agent.withLiveReasoning(messages);
+  ok("reasoning from the current request is sent", live[4].reasoning_content === "NEW-THOUGHT", JSON.stringify(live[4]));
+  ok("reasoning from an earlier request is not", live[1].reasoning_content === undefined, JSON.stringify(live[1]));
+  ok("the stored history is not modified", messages[1].reasoning_content === "OLD-THOUGHT", "mutated");
+}
+
+// Qwen's XML tool call form carries every value as text. "false" is truthy, so
+// recursive:"false" deleted a tree and dry_run:"true" ran for real.
+function testArgumentTypes()
+{
+  group("argument types");
+
+  eq("a text boolean false is false", tools.normalizeArgs("delete_path", { path: "a", recursive: "false" }),
+    { path: "a", recursive: false });
+  eq("a text boolean true is true", tools.normalizeArgs("replace_in_files", { find: "a", replace: "b", dry_run: "True" }),
+    { find: "a", replace: "b", dry_run: true });
+  eq("a text integer is a number", tools.normalizeArgs("read_file", { path: "a", start_line: " 40 " }),
+    { path: "a", start_line: 40 });
+  eq("strings stay strings", tools.normalizeArgs("write_file", { path: "1", content: "true" }),
+    { path: "1", content: "true" });
+  eq("an unknown tool is left alone", tools.normalizeArgs("nope", { recursive: "false" }), { recursive: "false" });
+}
+
+function testInlineRecoveryShapes()
+{
+  group("inline tool call shapes");
+
+  const recover = require("../src/lmstudio").recoverInlineToolCall;
+  const block = function (p)
+  {
+    return "<tool_call>\n<function=read_file>\n<parameter=path>\n" + p + "\n</parameter>\n</function>\n</tool_call>";
+  };
+
+  const many = recover("Reading.\n" + block("a.c") + "\n" + block("b.c"));
+  eq("every block becomes a call", many && many.calls.map(function (c)
+  {
+    return JSON.parse(c.function.arguments).path;
+  }), ["a.c", "b.c"]);
+  ok("and the ids are distinct", many && many.calls[0].id !== many.calls[1].id, "same id");
+
+  const bare = recover("<function=list_dir>\n<parameter=path>\n.\n</parameter>\n</function>");
+  ok("a block without the tool_call wrapper is recovered", !!bare && bare.call && bare.call.function.name === "list_dir",
+    JSON.stringify(bare));
+
+  eq("syntax shown in prose is not executed",
+    recover("Qwen writes calls like <function=read_file> ... </function> in its output, as shown."), null);
+
+  const partial = recover(block("a.c") + "\n<tool_call>\n<function=write_file>\n<parameter=content>\nhal");
+  ok("whole calls in front of a cut-off one still run", !!partial && partial.calls.length === 1 && partial.truncated,
+    JSON.stringify(partial));
+}
+
+async function testShellEndings(base)
+{
+  group("shell endings");
+
+  const dir = path.join(base, "shell-endings");
+  fs.mkdirSync(dir, { recursive: true });
+
+  const started = Date.now();
+  const bg = await tools.execute(dir, "run_command", { command: "sleep 6 & echo started", timeout_ms: 20000 });
+  const took = Date.now() - started;
+  ok("a background job does not hold the call open", took < 5000, took + " ms");
+  ok("and the command still counts as a success", bg.ok && /started/.test(bg.text), bg.text);
+  ok("the model is told the job is still running", /background/.test(bg.text), bg.text);
+
+  if (toolchain.detect().cc)
+  {
+    const crash = await tools.execute(dir, "run_command",
+      { command: "printf 'int main(void){int *p=0;return *p;}' > c.c && " + toolchain.detect().cc + " -o c c.c && ./c" });
+    ok("a segfault is named", !crash.ok && /SIGSEGV/.test(crash.text) && /crash/.test(crash.summary),
+      crash.summary + " / " + crash.text.slice(0, 300));
+  }
+
+  const viaShell = await tools.execute(dir, "run_command", { command: "bash -c 'kill -SEGV $$'; echo code=$?" });
+  ok("a 128+N status is reported as exit 0 of the outer shell", /code=139/.test(viaShell.text), viaShell.text);
+
+  const status = await tools.execute(dir, "run_command", { command: "bash -c 'kill -ABRT $$'" });
+  ok("a signal exit through the shell is named too", /SIGABRT/.test(status.text), status.text);
+}
+
+function testLinuxDetection(base)
+{
+  group("linux detection");
+
+  const py = path.join(base, "py-detect");
+  fs.mkdirSync(path.join(py, "tests"), { recursive: true });
+  fs.writeFileSync(path.join(py, "main.py"), "print('hi')\n");
+  fs.writeFileSync(path.join(py, "requirements.txt"), "");
+  fs.writeFileSync(path.join(py, "tests", "test_main.py"), "def test_x():\n    assert True\n");
+  const info = project.detect(py);
+  const wanted = toolchain.commandPath("python3") || !toolchain.commandPath("python") ? "python3" : "python";
+  ok("python runs through an interpreter that exists", info && info.tasks.run.command.indexOf(wanted + " ") === 0,
+    info && info.tasks.run.command);
+  ok("and so do its tests", info && info.tasks.test.command.indexOf(wanted + " -m pytest") === 0,
+    info && info.tasks.test.command);
+
+  const node = path.join(base, "node-detect");
+  fs.mkdirSync(node, { recursive: true });
+  fs.writeFileSync(path.join(node, "package.json"), JSON.stringify({ name: "n" }));
+  fs.writeFileSync(path.join(node, "csv.test.js"), "");
+  const nodeInfo = project.detect(node);
+  eq("a top-level *.test.js is found", nodeInfo && nodeInfo.tasks.test.command, "node --test");
+
+  const summary = project.summarizeOutput([
+    "/usr/bin/ld: main.o: in function `main':",
+    "main.c:(.text+0x9): undefined reference to `add'",
+    "collect2: error: ld returned 1 exit status",
+    "CMake Error at CMakeLists.txt:12 (add_executable):"
+  ].join("\n"));
+  ok("a GNU ld undefined reference is an error", summary.errors.some(function (e)
+  {
+    return /undefined reference to `add'/.test(e);
+  }), JSON.stringify(summary.errors));
+  ok("and it raises the link hint", summary.linkError, "no link hint");
+  ok("a CMake error names its line", summary.errors.some(function (e)
+  {
+    return /CMakeLists.txt:12/.test(e);
+  }), JSON.stringify(summary.errors));
 }
 
 main().catch(function (err)

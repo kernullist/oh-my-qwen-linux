@@ -9,6 +9,9 @@ const os = require("os");
 
 const APP_DIR_NAME = "oh-my-qwen";
 
+// "default" plus every level LM Studio's reasoning_effort accepts.
+const REASONING_EFFORTS = ["default", "none", "minimal", "low", "medium", "high", "xhigh"];
+
 // House rules handed to the model on every turn. These exist because local
 // models keep making the same mistakes in local workspaces: tests that leave
 // state behind, unchecked failures, and changes reported without verification.
@@ -32,9 +35,9 @@ const DEFAULTS =
   topP: 0.95,
   topK: 20,
   presencePenalty: 0.0,
-  // "default" sends nothing and leaves the model's own reasoning effort
-  // (xhigh) in place; medium/low tame an xhigh model that spends the whole
-  // token budget thinking. Unknown to the server, this field is ignored.
+  // "default" sends nothing and leaves the model's own setting in place. The
+  // other values go to LM Studio as reasoning_effort; "none" is the one that
+  // switches thinking off on an on/off model such as Qwen3.8.
   reasoningEffort: "default",
   maxTokens: 8192,
   contextTokens: 65536,
@@ -201,7 +204,7 @@ function sanitize(raw)
     out.presencePenalty = Math.min(2, Math.max(-2, raw.presencePenalty));
   }
   if (typeof raw.reasoningEffort === "string" &&
-    ["default", "xhigh", "medium", "low"].indexOf(raw.reasoningEffort) >= 0)
+    REASONING_EFFORTS.indexOf(raw.reasoningEffort) >= 0)
   {
     out.reasoningEffort = raw.reasoningEffort;
   }
@@ -312,6 +315,7 @@ module.exports =
 {
   DEFAULTS: DEFAULTS,
   DEFAULT_CODING_RULES: DEFAULT_CODING_RULES,
+  REASONING_EFFORTS: REASONING_EFFORTS,
   appDir: appDir,
   isPortable: isPortable,
   configPath: configPath,

@@ -6,7 +6,7 @@ LM Studio의 Qwen 계열 모델을 로컬 코딩 에이전트로 사용하는 Ub
 
 - Ubuntu 22.04 이상(24.04 권장)
 - Node.js 20 이상
-- LM Studio와 tool calling을 지원하는 모델
+- LM Studio 0.4.8 이상과 tool calling을 지원하는 모델(이전 버전도 동작하지만 '추론 노력' 설정은 무시됨)
 - 선택 사항: zenity 또는 kdialog
 - C/C++ 작업 시 build-essential, 필요에 따라 cmake와 ninja-build
 
@@ -25,16 +25,27 @@ LM Studio의 Qwen 계열 모델을 로컬 코딩 에이전트로 사용하는 Ub
 
 LM Studio에서 모델을 불러오고 Developer > Local Server를 시작한 뒤, 앱 설정에서 서버 주소와 모델을 선택한다. 상단 폴더 버튼에서 /home/user/projects/app 형태의 작업 폴더를 등록한다.
 
+다른 PC의 LM Studio를 쓰려면 서버 주소에 http://192.168.1.28:1234 처럼 입력하고, LM Studio에서 "Serve on Local Network"를 켠다.
+
+## 모델 설정
+
+기본값은 Qwen3.8 계열의 thinking 모드 권장값을 따른다: temperature 0.6, top_p 0.95, top_k 20, presence_penalty 0, 응답 8192 토큰, 대화 예산 65536 토큰. 대화 예산과 응답 토큰의 합은 LM Studio에 실제로 로드된 컨텍스트보다 작아야 하며, 설정 화면이 로드된 모델 기준으로 확인해 준다.
+
+'추론 노력'은 reasoning_effort로 전달된다. LM Studio는 none, minimal, low, medium, high, xhigh를 받지만 Qwen3.8은 추론을 켜기/끄기로만 지원하므로 실제로 효과가 있는 값은 '끄기(none)' 하나다. 빠르고 가벼운 작업에서는 끄기를 쓰면 된다. 한 요청 안에서는 모델의 생각 과정을 도구 라운드 사이에 다시 넘겨주고(Qwen 템플릿의 interleaved thinking), 다음 요청부터는 버린다.
+
 설정은 XDG_CONFIG_HOME/oh-my-qwen에 저장된다. XDG_CONFIG_HOME이 없으면 ~/.config/oh-my-qwen을 사용한다. OMQ_DATA_DIR을 지정하면 그 경로가 우선한다.
 
 ## Ubuntu 포팅 내용
 
-- run_command는 격리된 비대화형 /bin/bash에서 pipefail과 함께 실행된다.
+- run_command는 격리된 비대화형 /bin/bash에서 pipefail과 함께 실행된다. git 프롬프트와 pager는 꺼져 있다.
+- 백그라운드로 띄운 작업(`./server &`)이 있어도 셸이 끝나면 바로 결과를 돌려주고, 그 작업은 계속 실행된다.
+- 프로그램이 죽으면 종료 코드 대신 시그널(SIGSEGV, SIGABRT, SIGFPE 등)과 원인 힌트를 보여준다.
 - 타임아웃이나 취소 시 Bash와 그 하위 프로세스 그룹 전체를 종료한다.
 - CMake는 Ninja가 있으면 Ninja를, 아니면 Unix Makefiles를 사용한다.
 - 빌드 파일이 없는 C/C++ 폴더는 GCC 또는 Clang으로 빌드한다.
 - 생성된 ELF 실행 파일을 찾아 run_project로 실행한다.
-- build.sh, configure, autogen.sh, Make, Node.js, Python, Go, Rust, .NET을 자동 감지한다.
+- build.sh, configure, autogen.sh, Make, Node.js, Python, Go, Rust, .NET을 자동 감지한다. python 명령이 없으면(Ubuntu 기본) python3로 실행한다.
+- GNU ld 오류(undefined reference, cannot find -lfoo)와 CMake 오류도 빌드 오류 목록에 표시한다.
 - /etc/passwd, 상위 폴더 탐색, HOME 아래 민감 경로 같은 작업 폴더 밖 Bash 경로를 승인 화면에 표시한다.
 - /, /etc, /usr, /var, 홈 디렉터리를 작업 폴더로 선택하면 보호 범위 경고를 표시한다.
 - 새 Linux 소스에는 Windows용 UTF-8 BOM을 붙이지 않으며 기존 BOM, 인코딩, 줄바꿈은 보존한다.
@@ -54,7 +65,7 @@ LM Studio에서 모델을 불러오고 Developer > Local Server를 시작한 뒤
 | CMake | configure 후 cmake --build build | ctest | 최신 ELF |
 | Make | make | make test | 최신 ELF |
 | Node.js | npm run build | npm test | npm start |
-| Python | 없음 | pytest | main.py 등 |
+| Python | 없음 | python3 -m pytest | main.py 등 |
 | Go | go build | go test | go run |
 | Rust | cargo build | cargo test | cargo run |
 | .NET | dotnet build | dotnet test | dotnet run |

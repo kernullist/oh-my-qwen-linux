@@ -97,10 +97,12 @@
     return d.getFullYear() + "년 " + (d.getMonth() + 1) + "월 " + d.getDate() + "일 " + days[d.getDay()] + "요일";
   }
 
+  // Local date, like dayLabel. toISOString() is UTC, so in Korea every message
+  // between midnight and 9 a.m. landed under the previous day's divider.
   function dayKey(iso)
   {
     const d = iso ? new Date(iso) : new Date();
-    return d.toISOString().slice(0, 10);
+    return d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate();
   }
 
   function nearBottom()
@@ -486,6 +488,19 @@
     shell.bubble.classList.remove("streaming");
     shell.time.textContent = timeLabel(item.at);
 
+    // What the round really cost, from the server's own count. The settings
+    // screen can only estimate; this is where the context limit shows up.
+    const usage = item.usage;
+    if (usage && usage.prompt_tokens)
+    {
+      const limit = state.config && state.config.contextTokens;
+      shell.time.title = "입력 " + usage.prompt_tokens.toLocaleString() + " · 출력 " +
+        (usage.completion_tokens || 0).toLocaleString() + " 토큰" +
+        (usage.completion_tokens_details && usage.completion_tokens_details.reasoning_tokens
+          ? " (생각 " + usage.completion_tokens_details.reasoning_tokens.toLocaleString() + ")" : "") +
+        (limit ? " · 대화 예산 " + limit.toLocaleString() : "");
+    }
+
     if (!hasText && shell.think.hidden)
     {
       shell.wrap.remove();
@@ -816,9 +831,19 @@
       updateHeader();
     });
 
+    // The browser reconnects on its own after the server restarts or the
+    // network blips, but everything broadcast in between is gone: a finished
+    // turn kept its typing bar and an approval card never appeared. A hello
+    // after the first one means "reconnected", so repaint from the server.
+    let hellos = 0;
     source.addEventListener("hello", function ()
     {
       state.connected = true;
+      hellos++;
+      if (hellos > 1)
+      {
+        loadState();
+      }
       updateHeader();
     });
 
@@ -869,6 +894,9 @@
       state.workspace = data.workspace;
       state.config = data.config;
       renderTranscript(data.transcript || []);
+      // The old room's turn was cancelled by the switch, and its turn_end is
+      // filtered out as another room's event, so the typing bar stayed up.
+      setBusy(!!data.busy);
       updateHeader();
     });
 
@@ -891,7 +919,7 @@
     on("assistant_start", function (data)
     {
       const shell = makeAssistantShell({ id: data.id, at: new Date().toISOString() });
-      state.streams.set(data.id, { shell: shell, content: "", reasoning: "", timer: null });
+      state.streams.set(data.id, { shell: shell, content: "", reasoning: "", timer: null, thinkTimer: null });
       setBusy(true, data.round > 1 ? ("작업 진행 중... (라운드 " + data.round + ")") : "응답 생성 중...");
       scrollToBottom();
     });
@@ -905,15 +933,21 @@
       }
       stream.reasoning += data.text;
 
-      if (state.config && state.config.showThinking)
+      // Rewriting the whole block on every delta is quadratic in the length of
+      // the reasoning, and a long think made the tab crawl. Batch like content.
+      if (state.config && state.config.showThinking && !stream.thinkTimer)
       {
-        stream.shell.think.hidden = false;
-        stream.shell.think.querySelector(".think-title").textContent = "생각 중... (" + stream.reasoning.length + "자)";
-        const body = stream.shell.think.querySelector(".think-body");
-        body.textContent = stream.reasoning;
-        body.scrollTop = body.scrollHeight;
+        stream.thinkTimer = setTimeout(function ()
+        {
+          stream.thinkTimer = null;
+          stream.shell.think.hidden = false;
+          stream.shell.think.querySelector(".think-title").textContent = "생각 중... (" + stream.reasoning.length + "자)";
+          const body = stream.shell.think.querySelector(".think-body");
+          body.textContent = stream.reasoning;
+          body.scrollTop = body.scrollHeight;
+          scrollToBottom();
+        }, 80);
       }
-      scrollToBottom();
     });
 
     on("content_delta", function (data)
@@ -950,6 +984,11 @@
       {
         clearTimeout(stream.timer);
         stream.timer = null;
+      }
+      if (stream.thinkTimer)
+      {
+        clearTimeout(stream.thinkTimer);
+        stream.thinkTimer = null;
       }
       renderAssistantFinal(stream.shell, item);
       state.streams.delete(item.id);
@@ -1447,6 +1486,7 @@
       state.workspace = data.workspace;
       state.config = data.config;
       renderTranscript(data.transcript || []);
+      setBusy(!!data.busy);
       updateHeader();
 
       // A risky root is worth stopping on. Keep the sheet open so the choice is

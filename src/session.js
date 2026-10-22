@@ -46,6 +46,9 @@ class Session
     // Bumped by reset(): a turn that was cancelled by "clear" must not write
     // its trailing notices into the freshly emptied room.
     this.epoch = 1;
+    // Real prompt tokens per estimated token, learned from LM Studio's usage
+    // reports. 0 until the first round has been measured.
+    this.tokenRatio = 0;
   }
 
   nextId(prefix)

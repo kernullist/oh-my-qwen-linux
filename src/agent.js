@@ -31,6 +31,7 @@ function messageTokens(msg)
 {
   let total = 8;
   total += estimateTokens(msg.content || "");
+  total += estimateTokens(msg.reasoning_content || "");
   if (Array.isArray(msg.tool_calls))
   {
     for (let i = 0; i < msg.tool_calls.length; i++)
@@ -193,9 +194,13 @@ function blockTokens(block)
 // because they are the bulk; the request that produced them is left alone.
 function shrinkBlock(block, budgetTokens)
 {
+  // The model's own reasoning is the cheapest thing to lose here: the tool
+  // results it was reasoning about are what the next step has to work from.
   const copies = block.messages.map(function (m)
   {
-    return Object.assign({}, m);
+    const copy = Object.assign({}, m);
+    delete copy.reasoning_content;
+    return copy;
   });
 
   const toolIndexes = [];
@@ -248,7 +253,78 @@ function shrinkBlock(block, budgetTokens)
 // Returns { messages, droppedBlocks, shrunk }. The caller needs to know when it
 // had to cut, because a turn that silently loses its own tool output looks to
 // the user like the model just went quiet.
+//
+// The request always carries a user message. Qwen chat templates raise
+// "No user query found in messages" when there is none, and LM Studio then
+// fails the round with a Jinja exception. A long turn reached exactly that: its
+// own tool results pushed the request that started it out of the window. So
+// the newest real request is reserved first, and when the blocks between it and
+// the kept tail had to go, it says so.
 function trimHistoryDetailed(messages, budgetTokens)
+{
+  const first = fitBlocks(messages, budgetTokens);
+  if (first.messages.some(isUserMessage))
+  {
+    return first;
+  }
+
+  const anchorAt = requestIndex(messages);
+  if (anchorAt < 0)
+  {
+    return first;
+  }
+
+  const anchorBudget = Math.max(300, Math.floor(budgetTokens * 0.25));
+  const anchorText = clipForContext(messages[anchorAt].content,
+    Math.max(600, anchorBudget * 3 - NOTE_CHARS));
+  const rest = fitBlocks(messages.slice(anchorAt + 1),
+    Math.max(1000, budgetTokens - estimateTokens(anchorText) - 60));
+
+  const skipped = rest.droppedBlocks;
+  const anchor = Object.assign({}, messages[anchorAt],
+  {
+    content: anchorText + (skipped > 0
+      ? "\n\n[runtime] " + skipped + " earlier step(s) of your work on this request were dropped to fit " +
+        "the context window. Re-read anything you need instead of assuming it from memory."
+      : "")
+  });
+
+  return {
+    messages: [anchor].concat(rest.messages),
+    droppedBlocks: groupBlocks(messages.slice(0, anchorAt)).length + skipped,
+    shrunk: rest.shrunk || anchorText !== messages[anchorAt].content
+  };
+}
+
+function isUserMessage(msg)
+{
+  return msg && msg.role === "user";
+}
+
+// Index of the newest message the user actually typed. Runtime nudges are user
+// messages too, but anchoring on "call test_project now" would lose the task.
+function requestIndex(messages)
+{
+  let fallback = -1;
+  for (let i = messages.length - 1; i >= 0; i--)
+  {
+    if (messages[i].role !== "user")
+    {
+      continue;
+    }
+    if (!/^\[runtime\]/.test(String(messages[i].content || "")))
+    {
+      return i;
+    }
+    if (fallback < 0)
+    {
+      fallback = i;
+    }
+  }
+  return fallback;
+}
+
+function fitBlocks(messages, budgetTokens)
 {
   const blocks = groupBlocks(messages);
   const kept = [];
@@ -313,6 +389,72 @@ function trimHistoryDetailed(messages, budgetTokens)
   }
 
   return { messages: kept, droppedBlocks: firstKept, shrunk: shrunk };
+}
+
+// Qwen3.x thinking templates render an assistant message's reasoning_content
+// only after the newest user message, so the model keeps its own chain of
+// thought across the tool rounds of one request and loses it at the next one.
+// Sending it anywhere else only costs budget the template then throws away.
+function withLiveReasoning(messages)
+{
+  let lastUser = -1;
+  for (let i = messages.length - 1; i >= 0; i--)
+  {
+    if (messages[i].role === "user")
+    {
+      lastUser = i;
+      break;
+    }
+  }
+
+  return messages.map(function (msg, i)
+  {
+    if (i > lastUser || msg.reasoning_content === undefined)
+    {
+      return msg;
+    }
+    const copy = Object.assign({}, msg);
+    delete copy.reasoning_content;
+    return copy;
+  });
+}
+
+// Tool call arguments as they go back to the server. LM Studio parses them
+// into the template's mapping and answers a request carrying broken JSON with
+// a bare HTTP 500 - and a reply cut off at max_tokens leaves exactly that in
+// the history, where it was saved and then sent with every later round. The
+// room stayed broken even across restarts. The tool result next to the call
+// already says the arguments were cut off, so "{}" loses nothing.
+function wireSafe(messages)
+{
+  return messages.map(function (msg)
+  {
+    if (!Array.isArray(msg.tool_calls) || msg.tool_calls.length === 0)
+    {
+      return msg;
+    }
+
+    let changed = false;
+    const calls = msg.tool_calls.map(function (call)
+    {
+      const raw = call && call.function ? call.function.arguments : "";
+      const parsed = safeParseArgs(raw);
+      const clean = parsed.ok ? JSON.stringify(parsed.value) : "{}";
+      if (clean === raw)
+      {
+        return call;
+      }
+      // Re-serialising only matters when the text is not already an object.
+      if (parsed.ok && typeof raw === "string" && raw.trim().charAt(0) === "{")
+      {
+        return call;
+      }
+      changed = true;
+      return Object.assign({}, call, { function: Object.assign({}, call.function, { arguments: clean }) });
+    });
+
+    return changed ? Object.assign({}, msg, { tool_calls: calls }) : msg;
+  });
 }
 
 function trimHistory(messages, budgetTokens)
@@ -441,11 +583,44 @@ function toolSchemaTokens()
 // the reply the model is about to write are paid for. The floor is deliberately
 // small: a large fixed floor would happily send more than a 4k-context model
 // can hold.
-function historyBudget(cfg, systemPrompt, replyTokens)
+//
+// ratio converts the estimate into the server's real count (see observeTokenRatio).
+// The context limit and the reply are real tokens, so they are scaled down into
+// estimate units before the estimated fixed costs are taken off.
+function historyBudget(cfg, systemPrompt, replyTokens, ratio)
 {
   const reply = replyTokens > 0 ? replyTokens : cfg.maxTokens;
-  const room = cfg.contextTokens - estimateTokens(systemPrompt) - toolSchemaTokens() - reply - 1000;
+  const scale = ratio > 0 ? ratio : 1;
+  const room = Math.floor((cfg.contextTokens - reply - 1000) / scale) - estimateTokens(systemPrompt) - toolSchemaTokens();
   return Math.max(1500, Math.min(room, cfg.contextTokens));
+}
+
+// Real prompt tokens per estimated token, learned from the usage LM Studio
+// reports. chars/3 holds for prose and is badly optimistic for code: Qwen's
+// tokenizer splits every digit, and read_file prefixes each line with its
+// number. Measured with five 1,400 line Python files under a 16,000 token
+// budget, requests the estimate put inside the budget went out at 19,713 real
+// tokens, which a model loaded with a 16k context cannot hold. The ratio only
+// ever corrects towards the server's own count and is clamped so one odd
+// round cannot starve or flood the history.
+function observeTokenRatio(previous, usage, estimated)
+{
+  if (!usage || !(usage.prompt_tokens > 0) || !(estimated > 0))
+  {
+    return previous;
+  }
+  const seen = Math.min(3, Math.max(0.7, usage.prompt_tokens / estimated));
+  return previous > 0 ? (previous + seen) / 2 : seen;
+}
+
+function requestTokens(systemPrompt, history)
+{
+  let total = estimateTokens(systemPrompt) + toolSchemaTokens();
+  for (let i = 0; i < history.length; i++)
+  {
+    total += messageTokens(history[i]);
+  }
+  return total;
 }
 
 // What NOT to do when a reply comes back empty, kept here because the obvious
@@ -521,6 +696,23 @@ function safeParseArgs(raw)
     if (parsed && typeof parsed === "object")
     {
       return { ok: true, value: parsed };
+    }
+    // Some templates double-encode the arguments string. That parses cleanly
+    // into a string, so the fallback in the catch below never saw it.
+    if (typeof parsed === "string")
+    {
+      try
+      {
+        const inner = JSON.parse(parsed);
+        if (inner && typeof inner === "object")
+        {
+          return { ok: true, value: inner };
+        }
+      }
+      catch (err2)
+      {
+        // not JSON inside either
+      }
     }
     return { ok: false, error: "arguments must be a JSON object" };
   }
@@ -726,6 +918,16 @@ async function runTurn(ctx)
     text: ctx.userText,
     at: new Date().toISOString()
   };
+  // Reasoning from earlier requests is dead weight from here on (see
+  // withLiveReasoning), so it is not kept in the saved session either.
+  for (let i = 0; i < session.messages.length; i++)
+  {
+    if (session.messages[i].reasoning_content !== undefined)
+    {
+      delete session.messages[i].reasoning_content;
+    }
+  }
+
   session.messages.push({ role: "user", content: ctx.userText });
   push(userItem);
   emitLive("user_message", userItem);
@@ -772,8 +974,8 @@ async function runTurn(ctx)
       }
 
       const replyTokens = cfg.maxTokens;
-      const budget = historyBudget(cfg, systemPrompt, replyTokens);
-      const trimmed = trimHistoryDetailed(session.messages, budget);
+      const budget = historyBudget(cfg, systemPrompt, replyTokens, session.tokenRatio);
+      const trimmed = trimHistoryDetailed(wireSafe(withLiveReasoning(session.messages)), budget);
       const history = trimmed.messages;
       const request = [{ role: "system", content: systemPrompt }].concat(history);
 
@@ -832,11 +1034,17 @@ async function runTurn(ctx)
       });
 
       activeId = null;
+      session.tokenRatio = observeTokenRatio(session.tokenRatio, result.usage, requestTokens(systemPrompt, history));
 
       const assistantMessage = { role: "assistant", content: result.content || "" };
       if (result.toolCalls.length > 0)
       {
         assistantMessage.tool_calls = result.toolCalls;
+        // Interleaved thinking: the next round sees why this call was made.
+        if (result.reasoning && result.reasoning.trim())
+        {
+          assistantMessage.reasoning_content = result.reasoning;
+        }
       }
       session.messages.push(assistantMessage);
 
@@ -871,7 +1079,7 @@ async function runTurn(ctx)
             // model, a bigger ceiling produced proportionally more reasoning and
             // still no answer.
             ? "모델이 '응답 최대 토큰'(" + replyTokens + ")을 생각 과정에만 다 써서 답변이 비어 있습니다. " +
-              "설정에서 '추론 노력'을 중간/낮음으로 낮추거나 요청을 더 작은 단계로 나눠 주세요. " +
+              "설정에서 '추론 노력'을 '끄기'로 바꾸거나(Qwen3.8처럼 켜기/끄기만 지원하는 모델은 중간/낮음이 효과가 없습니다) 요청을 더 작은 단계로 나눠 주세요. " +
               "한도를 올려도 생각이 늘어날 뿐이고, '생각 과정 표시'는 화면 표시만 바꿉니다."
             : "응답이 '응답 최대 토큰'(" + replyTokens + ") 한도에 걸려 도중에 잘렸습니다. " +
               "위 내용은 완결된 답변이 아닙니다. 설정에서 한도를 늘리거나 더 좁은 범위로 다시 질문해 주세요.",
@@ -910,7 +1118,7 @@ async function runTurn(ctx)
             level: "info",
             text: "모델이 빈 응답을 반환해서 다음 단계를 한 번 더 요청했습니다." +
               (ranOut
-                ? " 응답 공간은 그대로 둡니다. 늘려도 생각이 늘어날 뿐이니, 설정의 '추론 노력'을 낮추는 쪽이 유효합니다."
+                ? " 응답 공간은 그대로 둡니다. 늘려도 생각이 늘어날 뿐이니, 설정의 '추론 노력'을 '끄기'로 바꾸는 쪽이 유효합니다."
                 : ""),
             at: new Date().toISOString()
           };
@@ -1040,8 +1248,40 @@ async function runTurn(ctx)
           continue;
         }
 
-        const args = parsed.value;
+        // Typed before anything looks at it: the approval preview, the dry run
+        // bookkeeping and the duplicate check all read these flags too.
+        const args = tools.normalizeArgs(name, parsed.value);
         const label = tools.describeCall(name, args);
+
+        // Calls in one batch were planned together, on the assumption that the
+        // earlier ones succeed. Measured: asked to delete a folder and note it
+        // in the README, the model sent both at once; the user denied the
+        // delete, the edit still ran, and the README claimed a deletion that
+        // never happened. After a denial, nothing else in the batch changes
+        // the machine; the model sees why and re-plans next round.
+        if (denied && tools.isMutating(name))
+        {
+          const held = "Not run: an earlier action in this same batch was denied by the user, and this call was " +
+            "planned on the assumption that it would succeed. Re-plan from what actually happened before making " +
+            "this change, and do not describe it as done.";
+          session.messages.push({ role: "tool", tool_call_id: call.id, name: name, content: held });
+
+          const heldItem =
+          {
+            id: session.nextId("t"),
+            kind: "tool",
+            callId: call.id,
+            name: name,
+            label: label,
+            ok: false,
+            summary: "앞선 호출이 거부되어 실행하지 않음",
+            text: held,
+            at: new Date().toISOString()
+          };
+          push(heldItem);
+          emitLive("tool_result", heldItem);
+          continue;
+        }
 
         // Local models can lock onto a failing call and repeat it forever,
         // burning the round budget and (worse) spamming approval prompts.
@@ -1350,9 +1590,16 @@ async function runTurn(ctx)
       activeReasoning = "";
       emitLive("assistant_start", { id: messageId, round: 0 });
 
-      const budget = historyBudget(cfg, systemPrompt);
+      const budget = historyBudget(cfg, systemPrompt, Math.min(2048, cfg.maxTokens), session.tokenRatio);
       const request = [{ role: "system", content: systemPrompt }]
-        .concat(trimHistory(session.messages, budget))
+        // The ask below is the newest user message, so the template would drop
+        // every reasoning block in front of it anyway.
+        .concat(trimHistory(wireSafe(session.messages.map(function (m)
+        {
+          const copy = Object.assign({}, m);
+          delete copy.reasoning_content;
+          return copy;
+        })), budget))
         .concat([{ role: "user", content: ask }]);
 
       const wrap = await lmstudio.streamChat(
@@ -1503,7 +1750,12 @@ module.exports =
   toolSchemaTokens: toolSchemaTokens,
   buildSystemPrompt: buildSystemPrompt,
   trimHistory: trimHistory,
+  trimHistoryDetailed: trimHistoryDetailed,
+  withLiveReasoning: withLiveReasoning,
+  wireSafe: wireSafe,
   estimateTokens: estimateTokens,
+  historyBudget: historyBudget,
+  observeTokenRatio: observeTokenRatio,
   // Exported for the regression tests: a cancelled turn used to save an
   // assistant message whose tool_calls were never answered.
   closeUnansweredToolCalls: closeUnansweredToolCalls
