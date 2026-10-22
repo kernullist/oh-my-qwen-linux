@@ -12,7 +12,6 @@ An Ubuntu port of oh-my-qwen: a local web UI that turns a tool-capable Qwen mode
 
     sudo apt update
     sudo apt install -y build-essential cmake ninja-build zenity
-    chmod +x start.sh build.sh
     ./start.sh
 
 The UI listens on http://127.0.0.1:8787/. Use ./start.sh --no-open on a headless machine or ./start.sh --port 9000 to select another port.
@@ -24,6 +23,12 @@ Load a model and start Developer > Local Server in LM Studio. Select the endpoin
 Defaults follow Qwen's thinking-mode sampling for the Qwen3.8 class: temperature 0.6, top_p 0.95, top_k 20, presence_penalty 0, an 8192-token reply and a 65536-token conversation budget. Keep the budget plus the reply below the context length LM Studio actually loaded; the settings screen checks this against the loaded model.
 
 The reasoning setting is sent as reasoning_effort. LM Studio accepts none, minimal, low, medium, high and xhigh, but Qwen3.8 reports its reasoning as on/off only, so "none" (끄기) is the only value that changes anything: it switches thinking off for fast, cheap turns. Within one request the model's reasoning is passed back between tool rounds, as Qwen's templates expect for interleaved thinking, and dropped at the next request.
+
+## Context and history
+
+Each request carries the system prompt, the tool schema and as much of the conversation as fits the conversation budget. The app learns how many real tokens its estimate corresponds to from the prompt_tokens LM Studio reports, so code-heavy turns, which tokenize far more densely than prose, still stay inside the budget. Hover over a reply's time to see its real input, output and reasoning token counts.
+
+When a long turn no longer fits, the oldest tool results go first, but the request that started the turn is always kept, and the model is told that earlier steps were dropped. Tool call arguments that were cut off by the reply limit are sent back as an empty object, so one truncated reply cannot make LM Studio reject the rest of the conversation.
 
 Configuration is stored under XDG_CONFIG_HOME/oh-my-qwen, or ~/.config/oh-my-qwen when XDG_CONFIG_HOME is unset. OMQ_DATA_DIR overrides it.
 
@@ -43,6 +48,12 @@ Configuration is stored under XDG_CONFIG_HOME/oh-my-qwen, or ~/.config/oh-my-qwe
 - The folder picker uses zenity and then kdialog. Paths can always be typed manually.
 - Browser opening uses xdg-open; failure does not stop the server.
 
+## Approvals and safety
+
+Listing, reading and searching run immediately. Writing, editing, deleting, bulk replace, build, run, test and arbitrary Bash commands need approval.
+
+Auto-approve still raises a card for a command that reaches outside the workspace or rewrites a binary file through the shell. File tools refuse paths that leave the workspace, including through symbolic links. When an approval is denied, later state-changing calls from the same batch are not run either: they were planned on the denied call succeeding, so the model has to re-plan from what actually happened.
+
 ## Tests
 
 These suites do not require LM Studio:
@@ -51,9 +62,13 @@ These suites do not require LM Studio:
     npm run test:native
     npm run test:http
 
-The scenario suite does use LM Studio:
+The scenario suite drives the real agent loop against LM Studio on throwaway projects and then checks the files on disk:
 
     npm run test:scenarios
+    node tests/run.js --list
+    node tests/run.js --base http://192.168.1.28:1234 --model qwen3.8-27b --only approval-denied,cleanup-delete --repeat 3
+
+Other options: --tags, --rounds, --max-tokens, --context, --turn-timeout, --keep, --verbose, --out, --save-baseline and --no-baseline. Scenarios whose tools are missing are skipped, for example cmake, go, dotnet, pytest (python3 -m pytest) or pwsh for the PowerShell checks. Results are judged against tests/reports/baseline.json, so a scenario that is known to be flaky does not turn the run red.
 
 ## Portable build
 
@@ -71,5 +86,32 @@ Options:
 The build launches each artifact on a temporary port and verifies the API plus HTML, CSS, and JavaScript assets. Outputs are written under dist/ as a portable folder, a single executable, and linux-x64 tar.gz archives.
 
 The portable marker stores configuration and sessions in a sibling data/ directory. Remove portable.txt and data/ to use the normal XDG configuration directory.
+
+## Troubleshooting
+
+- node not found: install Node.js 20 or newer.
+- No xdg-open: start with --no-open and open the printed URL yourself.
+- No folder dialog: install zenity or kdialog, or type the path.
+- Cannot reach LM Studio: check that the Local Server is running, the port, and that a model is loaded. For another machine, enable "Serve on Local Network" in LM Studio.
+- Empty replies that used the whole token limit on thinking: set the reasoning setting to off (none) rather than raising the limit; a larger limit mostly produces more thinking.
+- pytest missing: Ubuntu blocks pip in the system Python. Install python3-pytest with apt or use a virtual environment; the model is told when pytest is absent and verifies with plain Python instead.
+- No C/C++ compiler: sudo apt install build-essential.
+- Permission denied on start.sh or build.sh: run chmod +x on them, or start with bash start.sh.
+- Logs: ~/.config/oh-my-qwen/oh-my-qwen.log, or data/oh-my-qwen.log in a portable build.
+
+## Layout
+
+    server.js          local HTTP/SSE server
+    src/agent.js       agent loop, history trimming and the system prompt
+    src/lmstudio.js    LM Studio client, streaming and inline tool call recovery
+    src/tools.js       file tools, Bash execution and path protection
+    src/project.js     project detection and build/run/test commands
+    src/toolchain.js   GCC/Clang/CMake/Ninja/Make detection
+    src/session.js     per-workspace chat history
+    src/config.js      settings, XDG and portable data paths
+    src/picker.js      zenity/kdialog folder picker
+    public/            web UI
+    tests/             unit, HTTP, native and scenario tests
+    build.js           portable folder and Node SEA build
 
 See README.ko.md for the Korean guide.
