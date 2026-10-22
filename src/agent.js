@@ -984,9 +984,13 @@ async function runTurn(ctx)
       emit(name, data);
     }
   };
+  // Saved as the turn goes, not only at its end: a turn is often minutes of
+  // tool work, and a process killed halfway (OOM, a crash, power) used to lose
+  // all of it, down to the message the user typed.
   const push = function (item)
   {
     session.pushTranscript(item, myEpoch);
+    sessionStore.persistSoon(session);
   };
 
   const userItem =
@@ -1508,6 +1512,22 @@ async function runTurn(ctx)
         if (execResult.cancelled)
         {
           session.messages.push({ role: "tool", tool_call_id: call.id, name: name, content: "The user cancelled this action." });
+          // Without a result the card kept saying "running", live and after
+          // every reload of the saved room.
+          const cancelledItem =
+          {
+            id: session.nextId("t"),
+            kind: "tool",
+            callId: call.id,
+            name: name,
+            label: label,
+            ok: false,
+            summary: "취소됨",
+            text: execResult.text || "cancelled",
+            at: new Date().toISOString()
+          };
+          push(cancelledItem);
+          emitLive("tool_result", cancelledItem);
           throw Object.assign(new Error("cancelled"), { cancelled: true });
         }
 

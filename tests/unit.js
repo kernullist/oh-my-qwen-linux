@@ -2111,6 +2111,7 @@ async function main()
   testVerifyTool();
   testPermissionModes();
   await testReviewFindings();
+  await testSessionPersistence();
   testArgumentTypes();
   testInlineRecoveryShapes();
   await testShellEndings(base);
@@ -2469,6 +2470,111 @@ async function testReviewFindings()
     server.closeAllConnections();
     server.close();
   }
+}
+
+// What a restart brings back. Each of these lost conversation in a reproduced
+// run: a kill in mid-turn, a damaged file, an answer over 4,000 characters.
+async function testSessionPersistence()
+{
+  group("session persistence");
+
+  const sessionStore = require("../src/session");
+  const ws = path.join(os.tmpdir(), "omq-persist-" + process.pid);
+  fs.mkdirSync(ws, { recursive: true });
+
+  const fresh = function ()
+  {
+    // A new process starts with an empty in-memory store.
+    delete require.cache[require.resolve("../src/session")];
+    return require("../src/session");
+  };
+
+  const first = sessionStore.get(ws);
+  first.reset();
+  first.messages.push({ role: "user", content: "keep me" });
+  first.messages.push({ role: "assistant", content: "", tool_calls: [{ id: "k1", type: "function",
+    function: { name: "run_command", arguments: "{}" } }] });
+  first.pushTranscript({ id: "u1", kind: "user", text: "keep me" });
+  first.pushTranscript({ id: "a1", kind: "assistant", text: "A".repeat(9000) + "END" });
+  first.pushTranscript({ id: "c1", kind: "tool_call", callId: "k1", name: "run_command", label: "sleep 30" });
+  first.pushTranscript({ id: "t1", kind: "tool", callId: "x", name: "read_file", text: "T".repeat(9000) });
+  sessionStore.flushAllSync();
+
+  const file = fs.readdirSync(sessionStore.sessionsDir()).filter(function (f)
+  {
+    return f.indexOf(path.basename(ws)) === 0 && /\.json$/.test(f) && !/corrupt/.test(f);
+  })[0];
+  ok("a flush writes the room", !!file, "no file");
+  ok("and leaves no temporary file behind", fs.readdirSync(sessionStore.sessionsDir()).every(function (f)
+  {
+    return !/\.tmp$/.test(f);
+  }), "tmp left");
+  const mode = fs.statSync(path.join(sessionStore.sessionsDir(), file)).mode & 0o777;
+  ok("the saved room is private", mode === 0o600, mode.toString(8));
+
+  const second = fresh().get(ws);
+  ok("the conversation comes back", second.messages[0] && second.messages[0].content === "keep me",
+    JSON.stringify(second.messages[0]));
+  ok("a long answer comes back whole", second.transcript.some(function (t)
+  {
+    return t.kind === "assistant" && /END$/.test(t.text);
+  }), "clipped");
+  ok("tool output is still an excerpt", second.transcript.some(function (t)
+  {
+    return t.kind === "tool" && t.callId === "x" && t.text.length < 5000;
+  }), "not clipped");
+  ok("a call cut off by the stop is answered", second.messages.some(function (m)
+  {
+    return m.role === "tool" && m.tool_call_id === "k1" && /did not finish/.test(m.content);
+  }), JSON.stringify(second.messages.slice(-1)));
+  ok("its card no longer says running", second.transcript.some(function (t)
+  {
+    return t.kind === "tool" && t.callId === "k1" && t.summary === "중단됨";
+  }), "still open");
+  ok("and the room says it was interrupted", second.transcript.some(function (t)
+  {
+    return t.kind === "notice" && /진행 중이던 작업/.test(t.text);
+  }), "no notice");
+
+  const full = path.join(sessionStore.sessionsDir(), file);
+  fs.writeFileSync(full, "{\"messages\":[{\"role\":");
+  const damaged = fresh().get(ws);
+  ok("a damaged file opens as a room that says so", damaged.messages.length === 0 && damaged.transcript.some(function (t)
+  {
+    return t.kind === "notice" && /읽을 수 없어/.test(t.text);
+  }), JSON.stringify(damaged.transcript));
+  ok("and the damaged file is kept, not overwritten", fs.readdirSync(sessionStore.sessionsDir()).some(function (f)
+  {
+    return f.indexOf(path.basename(ws)) === 0 && /corrupt/.test(f);
+  }), "gone");
+
+  const store = fresh();
+  const racing = store.get(path.join(ws, "race"));
+  racing.pushTranscript({ id: "r1", kind: "user", text: "race" });
+  await Promise.all([store.persist(racing), store.persist(racing), store.persist(racing)]);
+  const raceFile = fs.readdirSync(store.sessionsDir()).filter(function (f)
+  {
+    return f.indexOf("race-") === 0;
+  })[0];
+  let parsed = null;
+  try
+  {
+    parsed = JSON.parse(fs.readFileSync(path.join(store.sessionsDir(), raceFile), "utf8"));
+  }
+  catch (err)
+  {
+    parsed = null;
+  }
+  ok("saves that race each other still leave valid JSON", !!parsed && parsed.transcript.length === 1, raceFile);
+
+  fs.readdirSync(store.sessionsDir()).forEach(function (f)
+  {
+    if (f.indexOf(path.basename(ws)) === 0 || f.indexOf("race-") === 0)
+    {
+      fs.unlinkSync(path.join(store.sessionsDir(), f));
+    }
+  });
+  fixture.rmrf(ws);
 }
 
 // The verification nudge used to send the model to a test runner that was not

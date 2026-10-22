@@ -11,7 +11,13 @@ const config = require("./config");
 
 const MAX_TRANSCRIPT_ITEMS = 600;
 const MAX_MESSAGES = 400;
-const MAX_TRANSCRIPT_TEXT = 4000;
+// Tool output is the bulk of a transcript and the model already has it in full,
+// so the saved copy is an excerpt. What the user and the model said is the
+// conversation itself: clipping it at 4,000 characters meant a long answer came
+// back cut in half after a restart, or even after a page reload.
+const MAX_TOOL_TEXT = 4000;
+const MAX_CHAT_TEXT = 200000;
+const MAX_REASONING_TEXT = 20000;
 
 function sessionsDir()
 {
@@ -64,15 +70,26 @@ class Session
       return;
     }
 
-    // The UI only needs a readable excerpt; the full text still goes to the model.
-    if (item && typeof item.text === "string" && item.text.length > MAX_TRANSCRIPT_TEXT)
+    const chat = item && (item.kind === "user" || item.kind === "assistant");
+    const limit = chat ? MAX_CHAT_TEXT : MAX_TOOL_TEXT;
+    if (item && typeof item.text === "string" && item.text.length > limit)
     {
-      const dropped = item.text.length - MAX_TRANSCRIPT_TEXT;
+      const dropped = item.text.length - limit;
       item = Object.assign({}, item,
       {
-        text: item.text.slice(0, MAX_TRANSCRIPT_TEXT) + "\n... [" + dropped + " chars trimmed from the saved log]"
+        text: item.text.slice(0, limit) + "\n... [" + dropped + " chars trimmed from the saved log]"
       });
     }
+    if (item && typeof item.reasoning === "string" && item.reasoning.length > MAX_REASONING_TEXT)
+    {
+      item = Object.assign({}, item,
+      {
+        reasoning: item.reasoning.slice(0, MAX_REASONING_TEXT) + "\n... [" +
+          (item.reasoning.length - MAX_REASONING_TEXT) + " chars of reasoning trimmed from the saved log]"
+      });
+    }
+
+    this.dirty = true;
 
     this.transcript.push(item);
     if (this.transcript.length > MAX_TRANSCRIPT_ITEMS)
@@ -103,6 +120,7 @@ class Session
     this.messages = [];
     this.transcript = [];
     this.pending.clear();
+    this.dirty = true;
   }
 
   cancel(reason)
@@ -146,6 +164,76 @@ class Session
 
 const store = new Map();
 
+// A room saved in the middle of a turn - the app was killed, or shut down while
+// a command ran - holds tool calls that never got an answer, and tool cards that
+// would spin as "running" forever. Close both so the reloaded room reads as an
+// interrupted turn rather than a live one.
+function repairInterrupted(session)
+{
+  const answered = new Set();
+  for (let i = 0; i < session.messages.length; i++)
+  {
+    if (session.messages[i].role === "tool")
+    {
+      answered.add(session.messages[i].tool_call_id);
+    }
+  }
+
+  const repaired = [];
+  let interrupted = false;
+  for (let i = 0; i < session.messages.length; i++)
+  {
+    repaired.push(session.messages[i]);
+    const calls = session.messages[i].tool_calls || [];
+    for (let j = 0; j < calls.length; j++)
+    {
+      if (!answered.has(calls[j].id))
+      {
+        interrupted = true;
+        repaired.push({
+          role: "tool",
+          tool_call_id: calls[j].id,
+          name: calls[j].function ? calls[j].function.name : "tool",
+          content: "This call did not finish: the app stopped while it was running. Its effect is unknown; " +
+            "check the files before relying on it."
+        });
+      }
+    }
+  }
+  session.messages = repaired;
+
+  const results = new Set();
+  for (let i = 0; i < session.transcript.length; i++)
+  {
+    if (session.transcript[i].kind === "tool")
+    {
+      results.add(session.transcript[i].callId);
+    }
+  }
+  const at = new Date().toISOString();
+  const open = session.transcript.filter(function (item)
+  {
+    return item.kind === "tool_call" && !results.has(item.callId);
+  });
+  for (let i = 0; i < open.length; i++)
+  {
+    session.transcript.push({
+      id: "t_restored_" + i, kind: "tool", callId: open[i].callId, name: open[i].name, label: open[i].label,
+      ok: false, summary: "중단됨", text: "앱이 종료되어 이 작업이 끝나지 않았습니다.", at: at
+    });
+  }
+
+  if (interrupted || open.length > 0)
+  {
+    session.transcript.push({
+      id: "n_restored", kind: "notice", level: "warn",
+      text: "앱이 종료될 때 진행 중이던 작업이 있었습니다. 마지막 작업은 끝나지 않았을 수 있으니 결과를 확인해 주세요.",
+      at: at
+    });
+    session.dirty = true;
+  }
+}
+
 function get(workspace)
 {
   const key = keyFor(workspace);
@@ -155,61 +243,180 @@ function get(workspace)
   }
 
   const session = new Session(workspace);
+  const file = fileFor(workspace);
+  let text = null;
   try
   {
-    const raw = JSON.parse(fs.readFileSync(fileFor(workspace), "utf8"));
-    if (raw && Array.isArray(raw.messages))
-    {
-      session.messages = raw.messages;
-    }
-    if (raw && Array.isArray(raw.transcript))
-    {
-      session.transcript = raw.transcript;
-    }
+    text = fs.readFileSync(file, "utf8");
   }
   catch (err)
   {
     // fresh room
   }
 
+  if (text !== null)
+  {
+    try
+    {
+      const raw = JSON.parse(text);
+      if (raw && Array.isArray(raw.messages))
+      {
+        session.messages = raw.messages;
+      }
+      if (raw && Array.isArray(raw.transcript))
+      {
+        session.transcript = raw.transcript;
+      }
+      repairInterrupted(session);
+    }
+    catch (err)
+    {
+      // An unreadable file used to become an empty room in silence, and the
+      // next save overwrote it, so the history was gone for good. Keep it.
+      const aside = file.replace(/\.json$/, "") + ".corrupt-" + Date.now() + ".json";
+      try
+      {
+        fs.renameSync(file, aside);
+      }
+      catch (e)
+      {
+        // left where it is; it will not be read again either way
+      }
+      console.error("[session] could not read " + file + ": " + err.message + "; kept as " + aside);
+      session.transcript.push({
+        id: "n_corrupt", kind: "notice", level: "error",
+        text: "저장된 대화 파일을 읽을 수 없어 새 대화로 시작합니다. 원본은 " + aside + " 에 보관했습니다.",
+        at: new Date().toISOString()
+      });
+    }
+  }
+
   store.set(key, session);
   return session;
 }
 
-async function persist(session)
+// Written to a private temporary file and renamed over the old one, so a crash
+// or a full disk in the middle of a save leaves the previous version intact
+// instead of a truncated file the next start cannot parse. Writes for one room
+// are chained: a shutdown save racing the debounced one used to have two
+// writers truncating the same file at once.
+const writeChains = new Map();
+
+function serialize(session)
 {
+  session.trimMessages();
+  session.dirty = false;
+  return JSON.stringify(session.toJSON());
+}
+
+function tempFor(file)
+{
+  return file + "." + process.pid + "." + Date.now().toString(36) + ".tmp";
+}
+
+function persist(session)
+{
+  const file = fileFor(session.workspace);
+  const previous = writeChains.get(file) || Promise.resolve();
+  const next = previous.then(async function ()
+  {
+    const temp = tempFor(file);
+    try
+    {
+      const body = serialize(session);
+      await fsp.mkdir(sessionsDir(), { recursive: true });
+      await fsp.writeFile(temp, body, { encoding: "utf8", mode: 0o600 });
+      await fsp.rename(temp, file);
+    }
+    catch (err)
+    {
+      session.dirty = true;
+      fsp.unlink(temp).catch(function () {});
+      console.error("[session] persist failed:", err.message);
+    }
+  });
+  writeChains.set(file, next);
+  return next;
+}
+
+// For process exit, where nothing asynchronous runs any more.
+function persistSync(session)
+{
+  const file = fileFor(session.workspace);
+  const temp = tempFor(file);
   try
   {
-    session.trimMessages();
-    await fsp.mkdir(sessionsDir(), { recursive: true });
-    await fsp.writeFile(fileFor(session.workspace), JSON.stringify(session.toJSON()), "utf8");
+    const body = serialize(session);
+    fs.mkdirSync(sessionsDir(), { recursive: true });
+    fs.writeFileSync(temp, body, { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(temp, file);
   }
   catch (err)
   {
-    console.error("[session] persist failed:", err.message);
+    try
+    {
+      fs.unlinkSync(temp);
+    }
+    catch (e)
+    {
+      // nothing was written
+    }
+    console.error("[session] final save failed:", err.message);
   }
+}
+
+// Every room with unsaved changes, not just the open one: a room left a moment
+// ago can still have its debounced save pending.
+function flushAllSync()
+{
+  saveTimers.forEach(function (timer)
+  {
+    clearTimeout(timer);
+  });
+  saveTimers.clear();
+  pendingSince.clear();
+  store.forEach(function (session)
+  {
+    if (session.dirty)
+    {
+      persistSync(session);
+    }
+  });
 }
 
 // One debounce timer per session: a shared timer would drop the pending write
 // of the previous room when the user switches working folders quickly.
 const saveTimers = new Map();
 
+// Debounced, but never postponed past MAX_SAVE_DELAY_MS: a turn that keeps
+// changing the room would otherwise keep pushing its own save away.
+const SAVE_DELAY_MS = 700;
+const MAX_SAVE_DELAY_MS = 3000;
+const pendingSince = new Map();
+
 function persistSoon(session)
 {
-  session.trimMessages();
+  session.dirty = true;
 
   const key = keyFor(session.workspace);
+  const now = Date.now();
+  if (!pendingSince.has(key))
+  {
+    pendingSince.set(key, now);
+  }
   const existing = saveTimers.get(key);
   if (existing)
   {
     clearTimeout(existing);
   }
 
+  const delay = Math.max(0, Math.min(SAVE_DELAY_MS, pendingSince.get(key) + MAX_SAVE_DELAY_MS - now));
   saveTimers.set(key, setTimeout(function ()
   {
     saveTimers.delete(key);
+    pendingSince.delete(key);
     persist(session);
-  }, 700));
+  }, delay));
 }
 
 module.exports =
@@ -218,5 +425,11 @@ module.exports =
   get: get,
   persist: persist,
   persistSoon: persistSoon,
+  persistSync: persistSync,
+  all: function ()
+  {
+    return Array.from(store.values());
+  },
+  flushAllSync: flushAllSync,
   sessionsDir: sessionsDir
 };

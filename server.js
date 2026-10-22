@@ -766,6 +766,10 @@ let shuttingDown = false;
 
 // Persist the conversation before leaving, but never hang on it: a stuck write
 // would leave a windowless process alive with no way to reach it.
+//
+// A turn still running is cancelled first and given a moment to wind down, so
+// what it streamed is kept and its unanswered tool calls are closed the normal
+// way. Then every room with unsaved changes is written, not just the open one.
 function shutdown(reason)
 {
   if (shuttingDown)
@@ -775,18 +779,39 @@ function shutdown(reason)
   shuttingDown = true;
   console.log("[oh-my-qwen] shutting down (" + reason + ")");
 
-  const done = function ()
+  const busy = sessionStore.all().filter(function (session)
   {
+    return session.busy;
+  });
+  for (let i = 0; i < busy.length; i++)
+  {
+    busy[i].cancel("shutdown");
+  }
+
+  const started = Date.now();
+  const waitForTurns = function ()
+  {
+    const running = busy.some(function (session)
+    {
+      return session.busy;
+    });
+    if (running && Date.now() - started < 2000)
+    {
+      setTimeout(waitForTurns, 50);
+      return;
+    }
+    // The exit handler below does the writing, synchronously.
     process.exit(0);
   };
-  const timer = setTimeout(done, 3000);
-
-  sessionStore.persist(currentSession()).finally(function ()
-  {
-    clearTimeout(timer);
-    done();
-  });
+  waitForTurns();
 }
+
+// Every way out of the process passes here, including the uncaught exception
+// handler's process.exit(1). Only synchronous work runs at this point.
+process.on("exit", function ()
+{
+  sessionStore.flushAllSync();
+});
 
 process.on("SIGINT", function ()
 {
@@ -796,4 +821,11 @@ process.on("SIGINT", function ()
 process.on("SIGTERM", function ()
 {
   shutdown("SIGTERM");
+});
+
+// Closing the terminal that runs ./start.sh sends SIGHUP, whose default action
+// ended the process without saving the conversation.
+process.on("SIGHUP", function ()
+{
+  shutdown("SIGHUP");
 });

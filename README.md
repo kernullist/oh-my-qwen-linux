@@ -38,6 +38,8 @@ Each request carries the system prompt, the tool schema and as much of the conve
 
 When a long turn no longer fits, the oldest tool results go first, but the request that started the turn is always kept, and the model is told that earlier steps were dropped. Tool call arguments that were cut off by the reply limit are sent back as an empty object, so one truncated reply cannot make LM Studio reject the rest of the conversation.
 
+Each working folder has its own conversation, saved under sessions/ in the data directory while a turn runs, not only when it ends. Ctrl+C, SIGTERM, closing the terminal (SIGHUP) and the server's shutdown button all cancel a running turn cleanly and save every room before exiting. Saves go through a temporary file that is renamed into place, so a crash mid-save keeps the previous version. After a hard kill, the reloaded room marks the unfinished tool call as interrupted; a session file that cannot be read is kept aside as *.corrupt-*.json and the room says so instead of silently starting empty.
+
 Configuration is stored under XDG_CONFIG_HOME/oh-my-qwen, or ~/.config/oh-my-qwen when XDG_CONFIG_HOME is unset. OMQ_DATA_DIR overrides it.
 
 ## Ubuntu behavior

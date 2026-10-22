@@ -169,9 +169,12 @@ function rmrf(dir)
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch (err) { /* gone already */ }
 }
 
-function startServer()
+function startServer(keepData)
 {
-  rmrf(DATA_DIR);
+  if (!keepData)
+  {
+    rmrf(DATA_DIR);
+  }
   fs.mkdirSync(DATA_DIR, { recursive: true });
 
   const env = Object.assign({}, process.env, { OMQ_DATA_DIR: DATA_DIR });
@@ -738,6 +741,54 @@ async function testPermissionModes(port)
   }
 }
 
+// The conversation has to survive the process: closing the terminal (SIGHUP)
+// right after a turn used to drop it, because SIGHUP was not handled and the
+// save was still waiting on its debounce timer.
+async function testRestart(server)
+{
+  group("conversation survives a restart");
+
+  fs.mkdirSync(WORK_DIR, { recursive: true });
+  const model = await fakeModel("echo PERSIST-TOOL");
+  const events = eventStream(server.port);
+  await events.ready;
+  let next = server;
+
+  try
+  {
+    await request(server.port, "POST", "/api/workspace", { body: { path: WORK_DIR } });
+    await request(server.port, "POST", "/api/clear", { body: {} });
+    await request(server.port, "POST", "/api/config",
+      { body: { baseUrl: model.url, model: "fake", permissionMode: "full" } });
+    await request(server.port, "POST", "/api/chat", { body: { text: "remember PERSIST-MARK" } });
+    const ended = await events.waitFor(/event: turn_end/, 15000);
+    ok("a turn ran", ended, events.text().slice(-300));
+    events.close();
+
+    const exited = new Promise(function (resolve)
+    {
+      server.child.on("exit", function (code, sig) { resolve({ code: code, sig: sig }); });
+    });
+    server.child.kill("SIGHUP");
+    const how = await exited;
+    ok("SIGHUP ends the server cleanly", how.code === 0, JSON.stringify(how));
+
+    next = await startServer(true);
+    const state = await request(next.port, "GET", "/api/state");
+    const transcript = (state.json && state.json.transcript) || [];
+    const text = transcript.map(function (t) { return (t.kind || "") + ":" + (t.text || t.label || ""); }).join("\n");
+    ok("the user's message is still there", /user:remember PERSIST-MARK/.test(text), text.slice(0, 300));
+    ok("so is the tool call and the answer", /PERSIST-TOOL/.test(text) && /assistant:done/.test(text), text.slice(0, 400));
+  }
+  finally
+  {
+    events.close();
+    model.server.close();
+    await request(next.port, "POST", "/api/config", { body: { permissionMode: "ask", baseUrl: "http://localhost:1234", model: "" } });
+  }
+  return next;
+}
+
 // ---------------------------------------------------------------------------
 
 async function main()
@@ -769,6 +820,7 @@ async function main()
     await testBroadcast(server.port);
     await testHostileBodies(server.port);
     await testPermissionModes(server.port);
+    server = await testRestart(server);
     await testShutdown(server);
   }
   catch (err)
