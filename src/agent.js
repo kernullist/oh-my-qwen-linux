@@ -299,13 +299,12 @@ function shrinkBlock(block, budgetTokens)
 function trimHistoryDetailed(messages, budgetTokens)
 {
   const first = fitBlocks(messages, budgetTokens);
-  if (first.messages.some(isUserMessage))
-  {
-    return first;
-  }
-
   const anchorAt = requestIndex(messages);
-  if (anchorAt < 0)
+
+  // Kept means the block holding the request survived, not just that some
+  // user message did: a runtime nudge in the window satisfied the template
+  // while the task itself had been trimmed away.
+  if (anchorAt < 0 || first.droppedBlocks <= blockIndexOf(messages, anchorAt))
   {
     return first;
   }
@@ -332,9 +331,11 @@ function trimHistoryDetailed(messages, budgetTokens)
   };
 }
 
-function isUserMessage(msg)
+// Which groupBlocks() block the message at index lands in.
+function blockIndexOf(messages, index)
 {
-  return msg && msg.role === "user";
+  const blocks = groupBlocks(messages.slice(0, index + 1));
+  return blocks.length - 1;
 }
 
 // Index of the newest message the user actually typed. Runtime nudges are user
@@ -1400,8 +1401,12 @@ async function runTurn(ctx)
         // means "I trust you inside my folder", not "anywhere". A binary rewrite
         // through the shell is the one in-folder edit the file tools refuse
         // outright, so it is treated the same way.
-        const reaching = name === "run_command" ? tools.outsidePaths(root, args.command) : [];
-        const binaryTargets = name === "run_command" ? tools.binaryWrites(root, args.command) : [];
+        // build/run/test append their extra arguments to a shell command line,
+        // so "; cat /etc/shadow" there is exactly as much a shell command as
+        // run_command, and auto mode ran it without the outside check.
+        const shellText = tools.shellTextOf(name, args);
+        const reaching = shellText ? tools.outsidePaths(root, shellText) : [];
+        const binaryTargets = shellText ? tools.binaryWrites(root, shellText) : [];
         const risk = { mutating: tools.isMutating(name), outsidePaths: reaching, binaryWrites: binaryTargets };
         // Read live, not from the turn's snapshot: switching to auto in the
         // middle of a long turn should stop the cards from the next call on.

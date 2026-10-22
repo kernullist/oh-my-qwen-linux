@@ -161,7 +161,10 @@ function pytestAvailable(py)
   let ok = false;
   try
   {
-    const res = spawnSync(py, ["-c", "import pytest"], { stdio: "ignore", timeout: 10000 });
+    // -c puts the current directory first on sys.path, so a pytest.py in the
+    // directory the app was started from would be imported, and run, on every
+    // detection. "/" holds no such file.
+    const res = spawnSync(py, ["-c", "import pytest"], { cwd: "/", stdio: "ignore", timeout: 10000 });
     ok = res.status === 0;
   }
   catch (err)
@@ -623,13 +626,15 @@ function detect(root)
       tasks:
       {
         build: { command: null, needsMsvc: false },
-        test: { command: testish.length > 0 ? py + " -m pytest -q" : null, needsMsvc: false },
+        // No pytest, no test command: advertising one that can only fail sent
+        // the model, and the verification nudge, straight into it.
+        test: { command: testish.length > 0 && pytestAvailable(py) ? py + " -m pytest -q" : null, needsMsvc: false },
         run: { command: entry ? py + " " + shellQuote(entry) : null, needsMsvc: false }
       },
       notes: testish.length > 0
         ? (pytestAvailable(py)
           ? ["If a test needs a plugin that is missing, say so instead of installing packages."]
-          : ["pytest is NOT installed for " + py + ", so test_project will fail with \"No module named pytest\". " +
+          : ["pytest is NOT installed for " + py + ", so this project has no test_project command. " +
             "Do not try pip, ensurepip or apt: Ubuntu blocks installing into the system Python and the user did not ask " +
             "for it. Run unittest-style tests with " + py + " -m unittest discover, call plain test_* functions from a " +
             "short " + py + " script, and tell the user pytest is missing."])

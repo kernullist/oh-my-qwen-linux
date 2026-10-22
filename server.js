@@ -451,7 +451,7 @@ async function handleApi(req, res, url)
   if (route === "/api/websearch/test" && req.method === "POST")
   {
     const body = await readBody(req);
-    const typed = typeof body.tavilyApiKey === "string" ? body.tavilyApiKey.trim() : "";
+    const typed = typeof body.tavilyApiKey === "string" ? body.tavilyApiKey.replace(/\s+/g, "") : "";
     const key = typed || config.load().tavilyApiKey;
     if (!key)
     {

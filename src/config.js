@@ -246,7 +246,9 @@ function sanitize(raw)
   }
   if (typeof raw.tavilyApiKey === "string")
   {
-    out.tavilyApiKey = raw.tavilyApiKey.trim().slice(0, 200);
+    // A key copied out of a dashboard can carry a line break or a space; in an
+    // Authorization header that reads as "could not reach Tavily".
+    out.tavilyApiKey = raw.tavilyApiKey.replace(/\s+/g, "").slice(0, 200);
   }
   // Before modes there was only autoApprove, which meant what "auto" means now.
   out.permissionMode = permissions.modeOf(raw);
@@ -294,17 +296,22 @@ function save(patch)
   try
   {
     ensureDir();
-    // The file holds an API key now, so only the owner may read it. mode only
-    // applies when the file is created; chmod covers one that already exists.
-    fs.writeFileSync(configPath(), JSON.stringify(merged, null, 2), { encoding: "utf8", mode: 0o600 });
+    // The file holds an API key, so only the owner may read it. Writing in
+    // place kept an old file's 0644 until a chmod afterwards, with the key
+    // already in it, and a crash halfway left a truncated config. A private
+    // temporary file renamed over the old one has neither problem.
+    const target = configPath();
+    const temp = target + "." + process.pid + ".tmp";
+    fs.writeFileSync(temp, JSON.stringify(merged, null, 2), { encoding: "utf8", mode: 0o600 });
     try
     {
-      fs.chmodSync(configPath(), 0o600);
+      fs.chmodSync(temp, 0o600);
     }
     catch (err)
     {
       // a filesystem without POSIX modes
     }
+    fs.renameSync(temp, target);
   }
   catch (err)
   {

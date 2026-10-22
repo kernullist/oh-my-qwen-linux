@@ -262,6 +262,9 @@ const PATH_SHAPES =
   /"(\\\\[^"]+)"/g,
   /(^|[\s;,(=&|])(\\\\[A-Za-z0-9._-]+\\[^\s;,)"'|&]*)/g,
   /(^|[\s;,(=&|"'])((?:\.\.[\\/])+[^\s;,)"'|&]*)/g,
+  // A bare ".." ("cd .. && rm -rf other") names the parent as surely as
+  // "../other" does, and used to pass as an in-folder command.
+  /(^|[\s;,(=&|"'])(\.\.)(?=$|[\s;,)"'|&])/g,
   /"(\/[^"\r\n]*)"/g,
   /'(\/[^'\r\n]*)'/g,
   /(^|[\s;,(=&|<>])(\/[^\s;,)"'|&]*)/g
@@ -273,7 +276,8 @@ const ENV_SHAPES =
 [
   /\$env:([A-Za-z_][A-Za-z0-9_]*)((?:[\\/][^\s;,)"'|&]*)?)/g,
   /%([A-Za-z_][A-Za-z0-9_()]*)%((?:[\\/][^\s;,)"'|&]*)?)/g,
-  /(^|[\s;,(=&|"'])(~[\\/][^\s;,)"'|&]*)/g,
+  // "~/x", and a bare "~" ("cd ~ && ..."), which is the home directory itself.
+  /(^|[\s;,(=&|"'])(~(?:[\\/][^\s;,)"'|&]*)?)(?=$|[\s;,)"'|&])/g,
   /\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))((?:\/[^\s;,)"'|&]*)?)/g
 ];
 
@@ -572,7 +576,9 @@ function outsidePaths(root, command)
     while (m)
     {
       const raw = (m[2] !== undefined ? m[2] : m[1]) || "";
-      const candidate = raw.trim().replace(/[.,;:]+$/, "");
+      // Sentence punctuation is trimmed off a path, but ".." is the path.
+      const trimmedRaw = raw.trim();
+      const candidate = /^(\.\.[\\/]?)+$/.test(trimmedRaw) ? trimmedRaw : trimmedRaw.replace(/[.,;:]+$/, "");
 
       if (candidate)
       {
@@ -3851,6 +3857,22 @@ const WEB_SPECS =
   }
 ];
 
+// The text a call hands to Bash, if any: run_command's command, or the extra
+// arguments build/run/test append to the detected command line.
+function shellTextOf(name, args)
+{
+  const a = args || {};
+  if (name === "run_command")
+  {
+    return String(a.command || "");
+  }
+  if (name === "build_project" || name === "run_project" || name === "test_project")
+  {
+    return String(a.extra_args || a.args || a.filter || "");
+  }
+  return "";
+}
+
 function webSearchEnabled(cfg)
 {
   return !!(cfg && typeof cfg.tavilyApiKey === "string" && cfg.tavilyApiKey.trim());
@@ -4033,6 +4055,7 @@ module.exports =
   WEB_SPECS: WEB_SPECS,
   specsFor: specsFor,
   webSearchEnabled: webSearchEnabled,
+  shellTextOf: shellTextOf,
   execute: execute,
   isMutating: isMutating,
   describeCall: describeCall,

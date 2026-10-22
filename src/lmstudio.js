@@ -248,7 +248,13 @@ function recoverInlineToolCall(text)
 
   for (;;)
   {
-    const open = text.indexOf(OPEN, cursor);
+    let open = text.indexOf(OPEN, cursor);
+    // A block inside a ``` fence is an example the model is showing, not a
+    // call it is making: explaining the syntax used to run "rm -rf build".
+    while (open >= 0 && insideFence(text, open))
+    {
+      open = text.indexOf(OPEN, open + OPEN.length);
+    }
     if (open < 0)
     {
       rest += text.slice(cursor);
@@ -295,6 +301,12 @@ function recoverInlineToolCall(text)
 
 // The levels LM Studio's /v1/chat/completions accepts. Anything else is a 400.
 const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
+
+function insideFence(text, index)
+{
+  const fences = text.slice(0, index).match(/```/g);
+  return !!fences && fences.length % 2 === 1;
+}
 
 // Non-standard request fields this client may add. A server that validates
 // strictly names the offending field in its 400 body instead of ignoring it.

@@ -2110,6 +2110,7 @@ async function main()
   await testWebSearch();
   testVerifyTool();
   testPermissionModes();
+  await testReviewFindings();
   testArgumentTypes();
   testInlineRecoveryShapes();
   await testShellEndings(base);
@@ -2369,6 +2370,107 @@ function testPermissionModes()
   ok("and an ask-mode model that changes need approval", /need the user's approval/.test(prompt("ask")), "missing");
 }
 
+// Findings from the adversarial review of this code, each reproduced first.
+async function testReviewFindings()
+{
+  group("review findings");
+
+  // auto mode asks only for commands that leave the folder, so every way of
+  // naming the outside has to be seen.
+  const root = path.join(os.tmpdir(), "omq-review-root");
+  fs.mkdirSync(root, { recursive: true });
+  const seen = function (command)
+  {
+    return tools.outsidePaths(root, command).length > 0;
+  };
+  ok("a bare .. leaves the folder", seen("cd .. && rm -rf other") && seen("cat .."), "not flagged");
+  ok("a bare ~ leaves the folder", seen("cd ~ && ls") && seen("ls ~"), "not flagged");
+  ok("look-alikes stay inside", !seen("ls ./..foo") && !seen("echo hi..") && !seen("git log HEAD~1") && !seen("echo a~b"),
+    "false positive");
+
+  // build/run/test append extra arguments to a shell line.
+  eq("build arguments are shell text", tools.shellTextOf("build_project", { extra_args: "; cat /etc/shadow" }),
+    "; cat /etc/shadow");
+  eq("read tools have none", tools.shellTextOf("read_file", { path: "/etc/passwd" }), "");
+
+  // A runtime nudge kept in the window used to hide that the request was gone.
+  const messages = [{ role: "user", content: "REQUEST-MARK fix it" }];
+  for (let i = 0; i < 10; i++)
+  {
+    messages.push(toolCallMessage("q" + i, "read_file"));
+    messages.push({ role: "tool", tool_call_id: "q" + i, name: "read_file", content: "z".repeat(6000) });
+  }
+  messages.push({ role: "user", content: "[runtime] call test_project now" });
+  const kept = agent.trimHistoryDetailed(messages, 6000).messages;
+  ok("the request survives next to a runtime nudge", kept.some(function (m)
+  {
+    return /REQUEST-MARK/.test(m.content);
+  }), kept.map(function (m) { return m.role; }).join(","));
+  ok("and the nudge is still there", kept.some(function (m)
+  {
+    return /\[runtime\] call/.test(m.content);
+  }), "nudge lost");
+
+  const lm = require("../src/lmstudio");
+  eq("a tool call shown inside a code fence is not run",
+    lm.recoverInlineToolCall("Like this:\n```\n<tool_call>\n{\"name\": \"run_command\", \"arguments\": " +
+      "{\"command\": \"rm -rf build\"}}\n</tool_call>\n```\nThat is all."), null);
+  const after = lm.recoverInlineToolCall("```\n<tool_call>{\"name\":\"a\",\"arguments\":{}}</tool_call>\n```\n" +
+    "<tool_call>{\"name\":\"read_file\",\"arguments\":{\"path\":\"x\"}}</tool_call>");
+  ok("a real call after an example still runs, alone", !!after && after.calls.length === 1 &&
+    after.calls[0].function.name === "read_file", JSON.stringify(after && after.calls));
+
+  const websearch = require("../src/websearch");
+  eq("a short key shows nothing of itself", websearch.keyHint("abc"), "…");
+
+  const http = require("http");
+  let lastUrls = null;
+  const server = http.createServer(function (req, res)
+  {
+    let body = "";
+    req.on("data", function (c) { body += c; });
+    req.on("end", function ()
+    {
+      const json = JSON.parse(body);
+      if (json.query === "stall")
+      {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.write("{\"results\":[");
+        return;
+      }
+      lastUrls = json.urls;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ results: [], failed_results: [] }));
+    });
+  });
+  await new Promise(function (resolve) { server.listen(0, "127.0.0.1", resolve); });
+  const previous = process.env.OMQ_TAVILY_URL;
+  process.env.OMQ_TAVILY_URL = "http://127.0.0.1:" + server.address().port;
+  try
+  {
+    await websearch.extract("tvly-k", { url: "https://example.com/a?ids=1,2,3, https://b.example/x" });
+    eq("a comma inside a URL does not split it", lastUrls, ["https://example.com/a?ids=1,2,3", "https://b.example/x"]);
+
+    const controller = new AbortController();
+    setTimeout(function () { controller.abort(); }, 200);
+    const cut = await tools.execute("/tmp", "web_search", { query: "stall" }, controller.signal, { tavilyApiKey: "tvly-k" });
+    ok("cancelling while the answer streams in is a cancel", cut.cancelled === true, JSON.stringify(cut));
+  }
+  finally
+  {
+    if (previous === undefined)
+    {
+      delete process.env.OMQ_TAVILY_URL;
+    }
+    else
+    {
+      process.env.OMQ_TAVILY_URL = previous;
+    }
+    server.closeAllConnections();
+    server.close();
+  }
+}
+
 // The verification nudge used to send the model to a test runner that was not
 // installed, which can only fail.
 function testVerifyTool()
@@ -2519,7 +2621,10 @@ function testLinuxDetection(base)
   const wanted = toolchain.commandPath("python3") || !toolchain.commandPath("python") ? "python3" : "python";
   ok("python runs through an interpreter that exists", info && info.tasks.run.command.indexOf(wanted + " ") === 0,
     info && info.tasks.run.command);
-  ok("and so do its tests", info && info.tasks.test.command.indexOf(wanted + " -m pytest") === 0,
+  const { spawnSync } = require("child_process");
+  const hasPytest = spawnSync(wanted, ["-c", "import pytest"], { stdio: "ignore" }).status === 0;
+  ok(hasPytest ? "and so do its tests" : "no pytest means no test command to walk into",
+    info && (hasPytest ? String(info.tasks.test.command).indexOf(wanted + " -m pytest") === 0 : info.tasks.test.command === null),
     info && info.tasks.test.command);
 
   const node = path.join(base, "node-detect");

@@ -30,12 +30,18 @@ function baseUrl()
 }
 
 // "tvly-dev-…3f9a": enough to tell two keys apart, never enough to use one.
+// A short string shows nothing at all: its last four characters could be most
+// of it.
 function keyHint(key)
 {
   const k = String(key || "").trim();
   if (!k)
   {
     return "";
+  }
+  if (k.length < 16)
+  {
+    return "…";
   }
   const dash = k.lastIndexOf("-");
   const prefix = dash > 0 && dash < 12 ? k.slice(0, dash + 1) : "";
@@ -97,7 +103,7 @@ function errorDetail(text)
 
 async function post(key, route, body, timeoutMs, signal)
 {
-  const k = String(key || "").trim();
+  const k = String(key || "").replace(/\s+/g, "");
   if (!k)
   {
     const missing = new Error("Web search is not configured: no Tavily API key is set. " +
@@ -159,7 +165,27 @@ async function post(key, route, body, timeoutMs, signal)
         ". Check the network connection.");
     }
 
-    const text = await res.text();
+    // The body can stall after the headers, so the same cancel and timeout
+    // handling applies while it is read.
+    let text = "";
+    try
+    {
+      text = await res.text();
+    }
+    catch (err)
+    {
+      if (signal && signal.aborted)
+      {
+        const cancelled = new Error("cancelled");
+        cancelled.cancelled = true;
+        throw cancelled;
+      }
+      if (timedOut)
+      {
+        throw new Error("Tavily did not finish answering within " + Math.round(timeoutMs / 1000) + "s.");
+      }
+      throw new Error("The connection to Tavily broke while reading its answer.");
+    }
     if (!res.ok)
     {
       const failure = new Error(describeStatus(res.status, errorDetail(text)));
@@ -185,10 +211,12 @@ async function post(key, route, body, timeoutMs, signal)
   }
 }
 
-// Comma, space or newline separated, or already a list.
-function listArg(value)
+// Comma, space or newline separated, or already a list. urls splits on a comma
+// only where the next item starts a new URL: "?ids=1,2,3" is one URL.
+function listArg(value, urls)
 {
-  const items = Array.isArray(value) ? value : String(value === undefined || value === null ? "" : value).split(/[\s,]+/);
+  const separator = urls ? /\s+|,(?=\s*https?:\/\/)/i : /[\s,]+/;
+  const items = Array.isArray(value) ? value : String(value === undefined || value === null ? "" : value).split(separator);
   return items.map(function (s)
   {
     return String(s).trim();
@@ -295,7 +323,7 @@ async function search(key, args, signal)
 async function extract(key, args, signal, maxChars)
 {
   const a = args || {};
-  const urls = listArg(a.urls !== undefined ? a.urls : a.url).filter(function (u)
+  const urls = listArg(a.urls !== undefined ? a.urls : a.url, true).filter(function (u)
   {
     return /^https?:\/\//i.test(u);
   });
@@ -330,6 +358,13 @@ async function extract(key, args, signal, maxChars)
   {
     parts.push("Only the first " + MAX_EXTRACT_URLS + " URLs were fetched; " + (urls.length - picked.length) + " were left out.");
   }
+  // Failures go first: pages that fill the budget are clipped from the end,
+  // and a failure listed after them was clipped away with them.
+  for (let i = 0; i < failed.length; i++)
+  {
+    const f = failed[i] || {};
+    parts.push("FAILED " + String(f.url || "") + ": " + oneLine(f.error || "could not be extracted", 200));
+  }
   parts.push(UNTRUSTED_NOTE);
 
   for (let i = 0; i < results.length; i++)
@@ -343,13 +378,6 @@ async function extract(key, args, signal, maxChars)
     parts.push("");
     parts.push("=== " + String(r.url || picked[i] || "") + " ===");
     parts.push(clipped || "(the page had no readable text)");
-  }
-
-  for (let i = 0; i < failed.length; i++)
-  {
-    const f = failed[i] || {};
-    parts.push("");
-    parts.push("FAILED " + String(f.url || "") + ": " + oneLine(f.error || "could not be extracted", 200));
   }
 
   return {
