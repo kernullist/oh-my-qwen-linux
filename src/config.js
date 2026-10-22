@@ -48,6 +48,9 @@ const DEFAULTS =
   showThinking: true,
   codingRules: DEFAULT_CODING_RULES,
   systemPrompt: "",
+  // Tavily API key for web_search / web_fetch. Empty means the web tools are
+  // not offered to the model at all.
+  tavilyApiKey: "",
   recentWorkspaces: []
 };
 
@@ -239,6 +242,10 @@ function sanitize(raw)
   {
     out.systemPrompt = raw.systemPrompt.slice(0, 8000);
   }
+  if (typeof raw.tavilyApiKey === "string")
+  {
+    out.tavilyApiKey = raw.tavilyApiKey.trim().slice(0, 200);
+  }
   if (typeof raw.autoApprove === "boolean")
   {
     out.autoApprove = raw.autoApprove;
@@ -287,7 +294,17 @@ function save(patch)
   try
   {
     ensureDir();
-    fs.writeFileSync(configPath(), JSON.stringify(merged, null, 2), "utf8");
+    // The file holds an API key now, so only the owner may read it. mode only
+    // applies when the file is created; chmod covers one that already exists.
+    fs.writeFileSync(configPath(), JSON.stringify(merged, null, 2), { encoding: "utf8", mode: 0o600 });
+    try
+    {
+      fs.chmodSync(configPath(), 0o600);
+    }
+    catch (err)
+    {
+      // a filesystem without POSIX modes
+    }
   }
   catch (err)
   {

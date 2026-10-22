@@ -32,6 +32,14 @@ LM Studio에서 모델을 불러오고 Developer > Local Server를 시작한 뒤
 
 '추론 노력'은 reasoning_effort로 전달된다. LM Studio는 none, minimal, low, medium, high, xhigh를 받지만 Qwen3.8은 추론을 켜기/끄기로만 지원하므로 실제로 효과가 있는 값은 '끄기(none)' 하나다. 빠르고 가벼운 작업에서는 끄기를 쓰면 된다. 한 요청 안에서는 모델의 생각 과정을 도구 라운드 사이에 다시 넘겨주고(Qwen 템플릿의 interleaved thinking), 다음 요청부터는 버린다.
 
+## 웹 검색
+
+설정에 Tavily API 키(tavily.com에서 발급)를 넣으면 모델이 도구 두 개를 더 쓸 수 있다. web_search는 제목, URL, 요약을 돌려주고, web_fetch는 페이지 본문을 읽는다(질문을 주면 관련된 부분만). '키 확인'은 검색 한 번으로 키가 동작하는지 확인한다. 키가 없으면 이 도구들은 모델에게 아예 제공되지 않으므로 토큰도 쓰지 않는다.
+
+키는 소유자만 읽을 수 있는 권한(0600)으로 저장되는 config.json에 들어가며 브라우저로는 다시 보내지 않는다. 설정 화면에는 tvly-dev-…1234 같은 힌트만 표시된다. 입력란을 비워 두면 저장된 키가 유지되고, '키 삭제'로 지울 수 있다.
+
+검색은 이 PC의 아무것도 바꾸지 않으므로 승인 없이 실행되지만 검색어는 외부로 나간다. 그래서 모델에게 비밀 값이나 비공개 코드를 검색어에 넣지 말라고 지시한다. 웹 결과에는 신뢰할 수 없는 데이터라는 표시가 붙고, 모델은 출처 URL을 밝히고 페이지 안의 지시는 따르지 않도록 지시받는다. OMQ_TAVILY_URL로 다른 엔드포인트(프록시나 테스트용 서버)를 지정할 수 있다.
+
 ## 컨텍스트와 대화 기록
 
 요청마다 시스템 프롬프트, 도구 스키마, 그리고 대화 예산에 들어가는 만큼의 대화 기록이 전달된다. 앱은 LM Studio가 알려주는 prompt_tokens로 자기 추정치가 실제 몇 토큰인지 학습하므로, 산문보다 훨씬 촘촘하게 토큰화되는 코드 위주의 작업에서도 예산을 넘지 않는다. 답변의 시간 표시에 마우스를 올리면 실제 입력·출력·생각 토큰 수를 볼 수 있다.
@@ -114,6 +122,7 @@ LM Studio를 사용하는 시나리오 테스트는 임시 프로젝트에서 �
 - xdg-open 없음: --no-open으로 실행하고 출력된 URL을 직접 연다.
 - 폴더 선택 창 없음: zenity 또는 kdialog를 설치하거나 경로를 직접 입력한다.
 - LM Studio 연결 실패: Local Server, 포트, 모델 로드를 확인한다. 다른 PC라면 LM Studio의 "Serve on Local Network"를 켠다.
+- 웹 검색 실패: 설정의 '키 확인'이 원인을 알려준다. 401은 잘못된 키, 429는 요청 한도, 432/433은 크레딧 한도 소진이다.
 - 생각 과정에 토큰을 다 써서 답변이 비어 있음: 한도를 올리지 말고 '추론 노력'을 '끄기'로 바꾼다. 한도를 올리면 대개 생각만 길어진다.
 - pytest 없음: Ubuntu는 시스템 Python에 pip 설치를 막는다. apt로 python3-pytest를 설치하거나 가상환경을 쓴다. pytest가 없으면 모델에게 그 사실이 전달되어 일반 Python 스크립트로 검증한다.
 - C/C++ 컴파일러 없음: sudo apt install build-essential을 실행한다.
@@ -126,6 +135,7 @@ LM Studio를 사용하는 시나리오 테스트는 임시 프로젝트에서 �
     src/agent.js       에이전트 루프, 대화 기록 정리, Ubuntu 시스템 프롬프트
     src/lmstudio.js    LM Studio 클라이언트, 스트리밍, 본문에 섞인 도구 호출 복구
     src/tools.js       파일 도구, Bash 실행, 경로 보호
+    src/websearch.js   web_search / web_fetch 용 Tavily 클라이언트
     src/project.js     프로젝트 감지와 작업 명령
     src/toolchain.js   GCC/Clang/CMake/Ninja/Make 감지
     src/session.js     작업 폴더별 대화 기록

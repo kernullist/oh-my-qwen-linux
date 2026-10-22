@@ -131,6 +131,18 @@
 
       <span class="hint" id="contextHint"></span>
 
+      <div class="field">
+        <span class="field-label">
+          웹 검색 (Tavily API 키)
+          <button type="button" id="btnClearTavily" class="link-btn" hidden>키 삭제</button>
+        </span>
+        <div class="row">
+          <input type="password" id="inpTavilyKey" placeholder="tvly-..." spellcheck="false" autocomplete="off" />
+          <button class="ghost-btn" id="btnTestTavily" type="button">키 확인</button>
+        </div>
+        <span class="hint" id="tavilyHint">키를 넣으면 모델이 web_search / web_fetch 로 문서와 오류 메시지를 찾아볼 수 있습니다. 키는 tavily.com 에서 발급받습니다.</span>
+      </div>
+
       <label class="toggle">
         <input type="checkbox" id="chkAutoApprove" />
         <span>파일 수정/명령 실행 자동 승인</span>

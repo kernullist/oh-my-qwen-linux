@@ -24,6 +24,14 @@ Defaults follow Qwen's thinking-mode sampling for the Qwen3.8 class: temperature
 
 The reasoning setting is sent as reasoning_effort. LM Studio accepts none, minimal, low, medium, high and xhigh, but Qwen3.8 reports its reasoning as on/off only, so "none" (끄기) is the only value that changes anything: it switches thinking off for fast, cheap turns. Within one request the model's reasoning is passed back between tool rounds, as Qwen's templates expect for interleaved thinking, and dropped at the next request.
 
+## Web search
+
+Enter a Tavily API key (from tavily.com) in settings to give the model two more tools: web_search returns titles, URLs and snippets, and web_fetch reads pages, optionally only the parts relevant to a question. The "키 확인" button checks a key with one search. Without a key the tools are not offered at all, so they cost nothing.
+
+The key is stored in config.json, which is written with owner-only permissions (0600), and is never sent back to the browser; the settings screen only shows a hint such as tvly-dev-…1234. Leave the field empty to keep the saved key, or use "키 삭제" to remove it.
+
+Searching needs no approval because it changes nothing on the machine, but queries do leave it, so the model is told never to put secrets or private code into a query. Web results are labelled as untrusted data, and the model is told to cite its sources and never follow instructions found in a page. OMQ_TAVILY_URL points the client at a different endpoint, for a proxy or for tests.
+
 ## Context and history
 
 Each request carries the system prompt, the tool schema and as much of the conversation as fits the conversation budget. The app learns how many real tokens its estimate corresponds to from the prompt_tokens LM Studio reports, so code-heavy turns, which tokenize far more densely than prose, still stay inside the budget. Hover over a reply's time to see its real input, output and reasoning token counts.
@@ -93,6 +101,7 @@ The portable marker stores configuration and sessions in a sibling data/ directo
 - No xdg-open: start with --no-open and open the printed URL yourself.
 - No folder dialog: install zenity or kdialog, or type the path.
 - Cannot reach LM Studio: check that the Local Server is running, the port, and that a model is loaded. For another machine, enable "Serve on Local Network" in LM Studio.
+- Web search fails: "키 확인" in settings names the cause. 401 means a wrong key, 429 a rate limit, 432 or 433 a used-up credit limit.
 - Empty replies that used the whole token limit on thinking: set the reasoning setting to off (none) rather than raising the limit; a larger limit mostly produces more thinking.
 - pytest missing: Ubuntu blocks pip in the system Python. Install python3-pytest with apt or use a virtual environment; the model is told when pytest is absent and verifies with plain Python instead.
 - No C/C++ compiler: sudo apt install build-essential.
@@ -105,6 +114,7 @@ The portable marker stores configuration and sessions in a sibling data/ directo
     src/agent.js       agent loop, history trimming and the system prompt
     src/lmstudio.js    LM Studio client, streaming and inline tool call recovery
     src/tools.js       file tools, Bash execution and path protection
+    src/websearch.js   Tavily client for web_search and web_fetch
     src/project.js     project detection and build/run/test commands
     src/toolchain.js   GCC/Clang/CMake/Ninja/Make detection
     src/session.js     per-workspace chat history

@@ -10,6 +10,7 @@ const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 const toolchain = require("./toolchain");
 const project = require("./project");
+const websearch = require("./websearch");
 
 // read_file loads the whole file to count lines accurately, so cap the size and
 // cap how many lines a single call returns.
@@ -3455,8 +3456,22 @@ async function toolRunCommand(root, args, signal)
   };
 }
 
+// Both need the Tavily key, which lives in the settings rather than the
+// workspace, so it arrives with the per-call options.
+async function toolWebSearch(root, args, signal, opts)
+{
+  return websearch.search(opts && opts.tavilyApiKey, args, signal);
+}
+
+async function toolWebFetch(root, args, signal, opts)
+{
+  return websearch.extract(opts && opts.tavilyApiKey, args, signal, opts && opts.maxChars);
+}
+
 const HANDLERS =
 {
+  web_search: toolWebSearch,
+  web_fetch: toolWebFetch,
   list_dir: toolListDir,
   read_file: toolReadFile,
   write_file: toolWriteFile,
@@ -3737,14 +3752,18 @@ const SPECS =
 // and "false" is truthy: delete_path would have deleted a whole tree and
 // replace_in_files would have run a dry run for real. Only booleans and
 // integers are touched, and only from unambiguous text.
-const SPEC_PROPS = new Map(SPECS.map(function (spec)
-{
-  return [spec.function.name, spec.function.parameters.properties || {}];
-}));
+let specProps = null;
 
 function normalizeArgs(name, args)
 {
-  const props = SPEC_PROPS.get(name);
+  if (!specProps)
+  {
+    specProps = new Map(SPECS.concat(WEB_SPECS).map(function (spec)
+    {
+      return [spec.function.name, spec.function.parameters.properties || {}];
+    }));
+  }
+  const props = specProps.get(name);
   if (!props || !args || typeof args !== "object" || Array.isArray(args))
   {
     return args;
@@ -3780,6 +3799,67 @@ function normalizeArgs(name, args)
     }
   }
   return out;
+}
+
+// Offered only when a Tavily key is set. A tool the model can see but never
+// use costs schema tokens on every request and invites calls that can only
+// fail.
+const WEB_SPECS =
+[
+  {
+    type: "function",
+    function:
+    {
+      name: "web_search",
+      description: "Search the web (Tavily) and get titles, URLs and short snippets. Use it for things the working " +
+        "folder cannot tell you: current library or tool versions, API documentation, the meaning of an error " +
+        "message, release notes. Look in the working folder first. Never put secrets, keys or private code in the query.",
+      parameters:
+      {
+        type: "object",
+        properties:
+        {
+          query: { type: "string", description: "What to search for. Plain keywords work best, for example \"cmake FetchContent googletest example\"." },
+          max_results: { type: "integer", description: "Number of results, 1-" + websearch.MAX_SEARCH_RESULTS + ". Default 5." },
+          topic: { type: "string", enum: ["general", "news", "finance"], description: "Default general. news for recent events." },
+          time_range: { type: "string", enum: ["day", "week", "month", "year"], description: "Only pages from this recent period." },
+          include_domains: { type: "string", description: "Comma separated domains to restrict to, for example \"docs.python.org,peps.python.org\"." },
+          depth: { type: "string", enum: ["basic", "advanced"], description: "advanced finds more relevant snippets and costs twice as much. Default basic." }
+        },
+        required: ["query"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function:
+    {
+      name: "web_fetch",
+      description: "Read the text of web pages (Tavily extract), usually URLs from web_search. Pass query to get only " +
+        "the parts of a long page that answer a specific question.",
+      parameters:
+      {
+        type: "object",
+        properties:
+        {
+          url: { type: "string", description: "One http(s) URL, or up to " + websearch.MAX_EXTRACT_URLS + " separated by spaces or commas." },
+          query: { type: "string", description: "Optional question; returns the most relevant parts of each page instead of the whole page." }
+        },
+        required: ["url"]
+      }
+    }
+  }
+];
+
+function webSearchEnabled(cfg)
+{
+  return !!(cfg && typeof cfg.tavilyApiKey === "string" && cfg.tavilyApiKey.trim());
+}
+
+// The tool list for one request.
+function specsFor(cfg)
+{
+  return webSearchEnabled(cfg) ? SPECS.concat(WEB_SPECS) : SPECS;
 }
 
 // Short human-facing label shown in the chat bubble for a tool call.
@@ -3819,6 +3899,14 @@ function describeCall(name, args)
   if (name === "run_command")
   {
     return String(a.command || "").slice(0, 120);
+  }
+  if (name === "web_search")
+  {
+    return String(a.query || "").slice(0, 80);
+  }
+  if (name === "web_fetch")
+  {
+    return String(a.url || a.urls || "").slice(0, 120);
   }
   return "";
 }
@@ -3883,10 +3971,14 @@ async function execute(root, name, args, signal, limits)
   let result = null;
   try
   {
-    result = await handler(root, normalizeArgs(name, args || {}), signal);
+    result = await handler(root, normalizeArgs(name, args || {}), signal, limits || {});
   }
   catch (err)
   {
+    if (err && err.cancelled)
+    {
+      return { ok: false, cancelled: true, summary: "취소됨", text: "cancelled by the user" };
+    }
     result = { ok: false, text: "tool error: " + friendlyFsError(err, root) };
   }
 
@@ -3938,6 +4030,9 @@ async function execute(root, name, args, signal, limits)
 module.exports =
 {
   SPECS: SPECS,
+  WEB_SPECS: WEB_SPECS,
+  specsFor: specsFor,
+  webSearchEnabled: webSearchEnabled,
   execute: execute,
   isMutating: isMutating,
   describeCall: describeCall,

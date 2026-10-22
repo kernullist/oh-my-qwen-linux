@@ -48,7 +48,9 @@
     build_project: "🔨",
     run_project: "▶️",
     test_project: "🧪",
-    run_command: "⚙️"
+    run_command: "⚙️",
+    web_search: "🌐",
+    web_fetch: "📰"
   };
 
   const TOOL_TITLES =
@@ -1149,6 +1151,9 @@
     el("inpCodingRules").value = (typeof cfg.codingRules === "string") ? cfg.codingRules : "";
     defaultCodingRules = cfg.defaultCodingRules || defaultCodingRules;
     el("inpSystemPrompt").value = cfg.systemPrompt || "";
+    el("inpTavilyKey").value = "";
+    tavilyCleared = false;
+    showTavilyState(cfg.webSearch);
     el("dataDirLabel").textContent = (cfg.dataDir || "-") + (cfg.portable ? "  (포터블)" : "");
     el("logPathHint").textContent = cfg.logPath ? ("로그: " + cfg.logPath) : "";
     updateContextHint();
@@ -1337,6 +1342,60 @@
     }
   }
 
+  // The saved key never comes back to the page, so an empty box means "keep
+  // what is saved" and clearing it takes the explicit button.
+  let tavilyCleared = false;
+
+  function showTavilyState(info)
+  {
+    const box = el("inpTavilyKey");
+    const configured = !!(info && info.configured) && !tavilyCleared;
+    box.placeholder = configured ? ("저장된 키: " + info.keyHint + " (바꾸려면 새 키 입력)") : "tvly-...";
+    el("btnClearTavily").hidden = !configured;
+    const hint = el("tavilyHint");
+    hint.className = "hint" + (configured ? " ok" : "");
+    hint.textContent = configured
+      ? "웹 검색이 켜져 있습니다. 모델이 web_search / web_fetch 를 쓸 수 있습니다."
+      : (tavilyCleared
+        ? "저장하면 키가 삭제되고 웹 검색이 꺼집니다."
+        : "키를 넣으면 모델이 web_search / web_fetch 로 문서와 오류 메시지를 찾아볼 수 있습니다. 키는 tavily.com 에서 발급받습니다.");
+  }
+
+  el("btnClearTavily").addEventListener("click", function ()
+  {
+    tavilyCleared = true;
+    el("inpTavilyKey").value = "";
+    showTavilyState(state.config && state.config.webSearch);
+  });
+
+  el("btnTestTavily").addEventListener("click", async function ()
+  {
+    const hint = el("tavilyHint");
+    hint.textContent = "Tavily 에 확인하는 중...";
+    hint.className = "hint";
+    try
+    {
+      const data = await api("/api/websearch/test",
+        { method: "POST", body: JSON.stringify({ tavilyApiKey: el("inpTavilyKey").value.trim() }) });
+      if (data.ok)
+      {
+        hint.textContent = "키가 동작합니다 (" + data.keyHint + ")." +
+          (el("inpTavilyKey").value.trim() ? " 저장을 눌러야 적용됩니다." : "");
+        hint.className = "hint ok";
+      }
+      else
+      {
+        hint.textContent = "확인 실패: " + (data.error || "알 수 없는 오류");
+        hint.className = "hint err";
+      }
+    }
+    catch (err)
+    {
+      hint.textContent = "확인 실패: " + err.message;
+      hint.className = "hint err";
+    }
+  });
+
   el("btnResetRules").addEventListener("click", function ()
   {
     const box = el("inpCodingRules");
@@ -1404,6 +1463,16 @@
       codingRules: el("inpCodingRules").value,
       systemPrompt: el("inpSystemPrompt").value
     };
+
+    const typedKey = el("inpTavilyKey").value.trim();
+    if (typedKey)
+    {
+      payload.tavilyApiKey = typedKey;
+    }
+    else if (tavilyCleared)
+    {
+      payload.tavilyApiKey = "";
+    }
 
     // An emptied field is "leave it unchanged", not zero. parseFloat/parseInt
     // give NaN there and JSON.stringify would send null, which the server would

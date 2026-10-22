@@ -303,6 +303,30 @@ async function testConfig(port)
     badEffort.json.config.reasoningEffort === "medium",
     JSON.stringify(badEffort.json && badEffort.json.config).slice(0, 200));
 
+  // The Tavily key is a secret: it is stored, it switches the web tools on,
+  // and it never comes back out of the API.
+  const SECRET = "tvly-dev-SECRETVALUE9876";
+  const keyed = await request(port, "POST", "/api/config", { body: { tavilyApiKey: SECRET } });
+  ok("a Tavily key is accepted and reported as configured",
+    keyed.code === 200 && keyed.json && keyed.json.config.webSearch && keyed.json.config.webSearch.configured === true &&
+      keyed.json.config.webSearch.keyHint === "tvly-dev-…9876",
+    JSON.stringify(keyed.json && keyed.json.config.webSearch));
+  const stateAfterKey = await request(port, "GET", "/api/state");
+  ok("the key itself never leaves the server",
+    keyed.text.indexOf("SECRETVALUE") < 0 && stateAfterKey.text.indexOf("SECRETVALUE") < 0, "key leaked");
+  const cfgFile = path.join(DATA_DIR, "config.json");
+  const mode = fs.statSync(cfgFile).mode & 0o777;
+  ok("the config file holding it is private to the owner", mode === 0o600, mode.toString(8));
+  const kept = await request(port, "POST", "/api/config", { body: { showThinking: true } });
+  ok("saving other settings keeps the key", kept.json && kept.json.config.webSearch.configured === true,
+    JSON.stringify(kept.json && kept.json.config.webSearch));
+  const keyCleared = await request(port, "POST", "/api/config", { body: { tavilyApiKey: "" } });
+  ok("an empty key clears it", keyCleared.json && keyCleared.json.config.webSearch.configured === false,
+    JSON.stringify(keyCleared.json && keyCleared.json.config.webSearch));
+  const noKeyTest = await request(port, "POST", "/api/websearch/test", { body: {} });
+  ok("testing without a key says so instead of calling out", noKeyTest.code === 200 && noKeyTest.json &&
+    noKeyTest.json.ok === false && /키/.test(noKeyTest.json.error), noKeyTest.text.slice(0, 200));
+
   // "none" is the value that actually switches Qwen3.8's thinking off in LM
   // Studio, so the settings screen has to be able to store it.
   const offEffort = await request(port, "POST", "/api/config", { body: { reasoningEffort: "none" } });

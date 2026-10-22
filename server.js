@@ -17,6 +17,7 @@ const sessionStore = require("./src/session");
 const agent = require("./src/agent");
 const picker = require("./src/picker");
 const assets = require("./src/assets");
+const websearch = require("./src/websearch");
 
 // In a single-file build the UI is embedded, so this path is only a fallback.
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -204,7 +205,10 @@ function publicConfig()
     // to the budget check, which used to compare only the conversation budget
     // and the reply against the model's context and so showed a comfortable
     // green while the real request was thousands of tokens over.
-    schemaTokens: agent.toolSchemaTokens(),
+    schemaTokens: agent.toolSchemaTokens(cfg),
+    // The key itself never leaves the server: the page only learns whether one
+    // is set and a hint to recognise it by.
+    webSearch: { configured: !!cfg.tavilyApiKey, keyHint: websearch.keyHint(cfg.tavilyApiKey) },
     defaultCodingRules: config.DEFAULT_CODING_RULES,
     systemPrompt: cfg.systemPrompt,
     recentWorkspaces: cfg.recentWorkspaces,
@@ -353,6 +357,11 @@ async function handleApi(req, res, url)
     {
       patch.systemPrompt = body.systemPrompt;
     }
+    // An empty string clears the key; leaving the field out keeps it.
+    if (typeof body.tavilyApiKey === "string")
+    {
+      patch.tavilyApiKey = body.tavilyApiKey;
+    }
 
     config.save(patch);
     broadcast("config", publicConfig());
@@ -403,6 +412,25 @@ async function handleApi(req, res, url)
       busy: session.busy });
     sendJson(res, 200, { ok: true, workspace: workspaceInfo(), config: publicConfig(), transcript: session.transcript,
       busy: session.busy });
+    return;
+  }
+
+  // Checks a key before it is relied on: the one typed into the form, or the
+  // saved one when the form is empty. Costs one Tavily credit.
+  if (route === "/api/websearch/test" && req.method === "POST")
+  {
+    const body = await readBody(req);
+    const typed = typeof body.tavilyApiKey === "string" ? body.tavilyApiKey.trim() : "";
+    const key = typed || config.load().tavilyApiKey;
+    if (!key)
+    {
+      sendJson(res, 200, { ok: false, error: "Tavily API 키가 없습니다." });
+      return;
+    }
+    const result = await websearch.verifyKey(key);
+    sendJson(res, 200, result.ok
+      ? { ok: true, keyHint: websearch.keyHint(key) }
+      : { ok: false, error: result.error, status: result.status });
     return;
   }
 
