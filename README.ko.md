@@ -22,6 +22,8 @@ LM Studio의 Qwen 계열 모델을 로컬 코딩 에이전트로 사용하는 Ub
     ./start.sh --no-open
     ./start.sh --port 9000
 
+코드를 업데이트(git pull)한 뒤에는 서버를 다시 시작한다. 웹 페이지는 요청할 때마다 디스크에서 읽지만 서버 코드는 시작할 때 한 번만 읽는다. 페이지가 이전 버전의 서버와 연결되면, 이전 서버에 없는 기능에서 알 수 없는 오류가 나는 대신 다시 시작하라는 빨간 안내가 표시된다.
+
 LM Studio에서 모델을 불러오고 Developer > Local Server를 시작한 뒤, 앱 설정에서 서버 주소와 모델을 선택한다. 상단 폴더 버튼에서 /home/user/projects/app 형태의 작업 폴더를 등록한다.
 
 다른 PC의 LM Studio를 쓰려면 서버 주소에 http://192.168.1.28:1234 처럼 입력하고, LM Studio에서 "Serve on Local Network"를 켠다.
@@ -48,7 +50,12 @@ LM Studio에서 모델을 불러오고 Developer > Local Server를 시작한 뒤
 
 대화는 작업 폴더마다 따로, 데이터 폴더의 sessions/ 아래에 저장된다. 턴이 끝날 때만이 아니라 진행 중에도 저장한다. Ctrl+C, SIGTERM, 터미널 닫기(SIGHUP), 설정의 서버 종료 버튼은 모두 진행 중인 턴을 정상적으로 취소하고 모든 대화를 저장한 뒤 종료한다. 저장은 임시 파일에 쓴 뒤 이름을 바꾸는 방식이라 저장 도중 죽어도 이전 버전이 남는다. 강제 종료된 뒤 다시 열면 끝나지 못한 도구 호출을 '중단됨'으로 표시하고, 읽을 수 없는 대화 파일은 *.corrupt-*.json으로 보관한 채 그 사실을 알린다(조용히 빈 대화로 덮어쓰지 않는다).
 
-설정은 XDG_CONFIG_HOME/oh-my-qwen에 저장된다. XDG_CONFIG_HOME이 없으면 ~/.config/oh-my-qwen을 사용한다. OMQ_DATA_DIR을 지정하면 그 경로가 우선한다.
+설정은 XDG_CONFIG_HOME/oh-my-qwen에 저장된다. XDG_CONFIG_HOME이 없으면 ~/.config/oh-my-qwen을 사용한다. OMQ_DATA_DIR을 지정하면 그 경로가 우선한다. 데이터 폴더에는 다음이 들어 있다.
+
+    config.json        설정과 Tavily 키(소유자만 읽기, 0600)
+    sessions/*.json    작업 폴더별 대화(0600)
+    instance.json      실행 중인 서버의 pid와 포트, 정상 종료 시 삭제
+    oh-my-qwen.log     서버 로그, 2 MB마다 교체
 
 ## Ubuntu 포팅 내용
 
@@ -90,9 +97,10 @@ LM Studio에서 모델을 불러오고 Developer > Local Server를 시작한 뒤
 |---|---|---|---|
 | CMake | configure 후 cmake --build build | ctest | 최신 ELF |
 | Make | make | make test | 최신 ELF |
-| Node.js | npm run build | npm test | npm start |
-| Python | 없음 | python3 -m pytest | main.py 등 |
-| Go | go build | go test | go run |
+| build.sh, configure, autogen.sh | 스크립트를 bash로 실행 | 없음 | 최신 ELF |
+| Node.js | npm run build | npm test 또는 node --test | npm start 또는 package.json의 main(기본 index.js)을 node로 실행 |
+| Python | 없음 | python3 -m pytest(pytest가 설치된 경우만) | main.py, app.py 등 |
+| Go | go build ./... | go test ./... -count=1 | go run . |
 | Rust | cargo build | cargo test | cargo run |
 | .NET | dotnet build | dotnet test | dotnet run |
 | C/C++ 소스만 존재 | GCC/Clang 직접 빌드 | 없음 | 생성된 ELF |
@@ -130,6 +138,8 @@ LM Studio를 사용하는 시나리오 테스트는 임시 프로젝트에서 �
 ## 문제 해결
 
 - node를 찾지 못함: Node.js 20 이상을 설치한다.
+- "서버가 이전 버전의 코드로 실행 중입니다" 빨간 안내, 또는 업데이트 후 "unknown endpoint" 오류: 서버가 아직 이전 코드로 실행 중이다. 서버를 종료(Ctrl+C 또는 설정의 '서버 종료')하고 ./start.sh로 다시 실행한 뒤 페이지를 새로고침한다. 이전 서버로 저장한 설정(예: Tavily 키)은 다시 입력해야 할 수 있다.
+- 실행 시 "already running at ...": 같은 데이터 폴더로 서버가 이미 실행 중이며 브라우저가 그쪽으로 열린다. 그 서버를 쓰거나 먼저 종료한다. 강제 종료된 서버가 남긴 잠금은 자동으로 정리된다.
 - xdg-open 없음: --no-open으로 실행하고 출력된 URL을 직접 연다.
 - 폴더 선택 창 없음: zenity 또는 kdialog를 설치하거나 경로를 직접 입력한다.
 - LM Studio 연결 실패: Local Server, 포트, 모델 로드를 확인한다. 다른 PC라면 LM Studio의 "Serve on Local Network"를 켠다.
@@ -150,7 +160,10 @@ LM Studio를 사용하는 시나리오 테스트는 임시 프로젝트에서 �
     src/project.js     프로젝트 감지와 작업 명령
     src/toolchain.js   GCC/Clang/CMake/Ninja/Make 감지
     src/session.js     작업 폴더별 대화 기록
+    src/permissions.js 권한 모드와 승인이 필요한 호출 판단
     src/config.js      설정, XDG와 포터블 데이터 경로
+    src/logger.js      로그 파일과 크래시 기록
+    src/assets.js      웹 UI 파일(디스크 또는 단일 실행 파일에 내장)
     src/picker.js      zenity/kdialog 폴더 선택기
     public/            웹 UI
     tests/             단위, HTTP, 네이티브, 시나리오 테스트

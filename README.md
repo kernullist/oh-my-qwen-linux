@@ -16,6 +16,8 @@ An Ubuntu port of oh-my-qwen: a local web UI that turns a tool-capable Qwen mode
 
 The UI listens on http://127.0.0.1:8787/. Only one server runs per data directory: starting the app again opens the running one instead of starting a second server that would overwrite the same conversations. Use ./start.sh --no-open on a headless machine or ./start.sh --port 9000 to select another port.
 
+After updating the code (git pull), restart the server: the page is read from disk on every request, but the server's own code is loaded once at startup. A page that finds itself talking to an older server shows a red banner asking for a restart instead of failing on routes the old server does not have.
+
 Load a model and start Developer > Local Server in LM Studio. Select the endpoint and model in settings, then register a workspace such as /home/user/projects/my-app. To reach LM Studio on another machine, enter its address, for example http://192.168.1.28:1234, and enable "Serve on Local Network" there.
 
 ## Model settings
@@ -40,7 +42,12 @@ When a long turn no longer fits, the oldest tool results go first, but the reque
 
 Each working folder has its own conversation, saved under sessions/ in the data directory while a turn runs, not only when it ends. Ctrl+C, SIGTERM, closing the terminal (SIGHUP) and the server's shutdown button all cancel a running turn cleanly and save every room before exiting. Saves go through a temporary file that is renamed into place, so a crash mid-save keeps the previous version. After a hard kill, the reloaded room marks the unfinished tool call as interrupted; a session file that cannot be read is kept aside as *.corrupt-*.json and the room says so instead of silently starting empty.
 
-Configuration is stored under XDG_CONFIG_HOME/oh-my-qwen, or ~/.config/oh-my-qwen when XDG_CONFIG_HOME is unset. OMQ_DATA_DIR overrides it.
+Configuration is stored under XDG_CONFIG_HOME/oh-my-qwen, or ~/.config/oh-my-qwen when XDG_CONFIG_HOME is unset. OMQ_DATA_DIR overrides it. The data directory holds:
+
+    config.json        settings, including the Tavily key (owner-only, 0600)
+    sessions/*.json    one conversation per working folder (0600)
+    instance.json      the running server's pid and port, removed on a clean exit
+    oh-my-qwen.log     server log, rotated at 2 MB
 
 ## Ubuntu behavior
 
@@ -57,6 +64,20 @@ Configuration is stored under XDG_CONFIG_HOME/oh-my-qwen, or ~/.config/oh-my-qwe
 - New Linux files do not receive a Windows-oriented UTF-8 BOM; existing encoding, BOM, and line endings remain preserved.
 - The folder picker uses zenity and then kdialog. Paths can always be typed manually.
 - Browser opening uses xdg-open; failure does not stop the server.
+
+## Build detection
+
+| Project | Build | Test | Run |
+|---|---|---|---|
+| CMake | configure, then cmake --build build | ctest | newest ELF |
+| Make | make | make test | newest ELF |
+| build.sh, configure, autogen.sh | bash the script | none | newest ELF |
+| Node.js | npm run build | npm test, or node --test | npm start, or node on package.json main (index.js) |
+| Python | none | python3 -m pytest, only when pytest is installed | main.py, app.py and similar |
+| Go | go build ./... | go test ./... -count=1 | go run . |
+| Rust | cargo build | cargo test | cargo run |
+| .NET | dotnet build | dotnet test | dotnet run |
+| C/C++ sources only | GCC/Clang directly | none | the built ELF |
 
 ## Approvals and safety
 
@@ -109,6 +130,8 @@ The portable marker stores configuration and sessions in a sibling data/ directo
 ## Troubleshooting
 
 - node not found: install Node.js 20 or newer.
+- Red banner "서버가 이전 버전의 코드로 실행 중입니다", or "unknown endpoint" after an update: the server still runs the old code. Stop it (Ctrl+C or 서버 종료 in settings), run ./start.sh again and reload the page. Settings saved through the old server may need to be entered again.
+- "already running at ..." when starting: a server for the same data directory is already up, and the browser is pointed at it. Use that one, or stop it first. A lock left by a killed server is taken over automatically.
 - No xdg-open: start with --no-open and open the printed URL yourself.
 - No folder dialog: install zenity or kdialog, or type the path.
 - Cannot reach LM Studio: check that the Local Server is running, the port, and that a model is loaded. For another machine, enable "Serve on Local Network" in LM Studio.
@@ -129,7 +152,10 @@ The portable marker stores configuration and sessions in a sibling data/ directo
     src/project.js     project detection and build/run/test commands
     src/toolchain.js   GCC/Clang/CMake/Ninja/Make detection
     src/session.js     per-workspace chat history
+    src/permissions.js permission modes and which calls need approval
     src/config.js      settings, XDG and portable data paths
+    src/logger.js      log file and crash logging
+    src/assets.js      UI files, from disk or embedded in the single executable
     src/picker.js      zenity/kdialog folder picker
     public/            web UI
     tests/             unit, HTTP, native and scenario tests
