@@ -10,6 +10,9 @@
     return document.getElementById(id);
   };
 
+  // The server API this page was written for; see API_VERSION in server.js.
+  const SERVER_API = 4;
+
   // Filled from /api/config so "restore defaults" always matches the server.
   let defaultCodingRules = "";
 
@@ -751,6 +754,13 @@
     el("roomName").textContent = ws.name ? ws.name : "oh-my-qwen";
 
     const problems = [];
+    // A server started before an update keeps running the old code while the
+    // page is already the new one, and every new feature fails in odd ways.
+    if (state.config && state.config.apiVersion !== SERVER_API)
+    {
+      problems.push("서버가 이전 버전의 코드로 실행 중입니다. 서버를 종료(Ctrl+C 또는 설정의 '서버 종료')한 뒤 " +
+        "./start.sh 로 다시 실행하고 이 페이지를 새로고침해 주세요.");
+    }
     if (!ws.path)
     {
       problems.push("작업 폴더가 등록되지 않았습니다.");

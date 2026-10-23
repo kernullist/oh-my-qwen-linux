@@ -2113,6 +2113,7 @@ async function main()
   await testReviewFindings();
   await testSessionPersistence();
   await testClearDuringStream();
+  testApiVersion();
   testArgumentTypes();
   testInlineRecoveryShapes();
   await testShellEndings(base);
@@ -2649,6 +2650,21 @@ async function testClearDuringStream()
   server.closeAllConnections();
   server.close();
   fixture.rmrf(ws);
+}
+
+// The page warns when it talks to a server older than itself. The two numbers
+// only help if they move together.
+function testApiVersion()
+{
+  group("page and server versions");
+
+  const server = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const page = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+  const serverVersion = (/const API_VERSION = (\d+);/.exec(server) || [])[1];
+  const pageVersion = (/const SERVER_API = (\d+);/.exec(page) || [])[1];
+  ok("both sides declare a version", !!serverVersion && !!pageVersion, serverVersion + " / " + pageVersion);
+  eq("and they match", serverVersion, pageVersion);
+  ok("the server publishes it", /apiVersion:\s*API_VERSION/.test(server), "not in publicConfig");
 }
 
 // The verification nudge used to send the model to a test runner that was not

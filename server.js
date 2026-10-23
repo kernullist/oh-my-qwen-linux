@@ -24,6 +24,13 @@ const permissions = require("./src/permissions");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const HOST = "127.0.0.1";
 
+// The UI files are read from disk on every request, but the server's own code
+// is loaded once. After an update the browser therefore runs the new page
+// against the old server, which answered the new settings screen with
+// "unknown endpoint". Bump this whenever the page starts relying on a new
+// route or field, together with SERVER_API in public/app.js.
+const API_VERSION = 4;
+
 const MIME =
 {
   ".html": "text/html; charset=utf-8",
@@ -199,6 +206,7 @@ function publicConfig()
     maxToolRounds: cfg.maxToolRounds,
     idleTimeoutSec: cfg.idleTimeoutSec,
     firstByteTimeoutSec: cfg.firstByteTimeoutSec,
+    apiVersion: API_VERSION,
     permissionMode: cfg.permissionMode,
     showThinking: cfg.showThinking,
     codingRules: cfg.codingRules,
