@@ -55,6 +55,16 @@ class Session
     // Real prompt tokens per estimated token, learned from LM Studio's usage
     // reports. 0 until the first round has been measured.
     this.tokenRatio = 0;
+    // Change counters rather than a dirty flag: a save in flight when the
+    // process exits has not landed, so "a save started" must not count as
+    // saved. The exit flush writes whenever saved lags behind changes.
+    this.changes = 0;
+    this.saved = 0;
+  }
+
+  markChanged()
+  {
+    this.changes++;
   }
 
   nextId(prefix)
@@ -89,7 +99,7 @@ class Session
       });
     }
 
-    this.dirty = true;
+    this.markChanged();
 
     this.transcript.push(item);
     if (this.transcript.length > MAX_TRANSCRIPT_ITEMS)
@@ -120,7 +130,7 @@ class Session
     this.messages = [];
     this.transcript = [];
     this.pending.clear();
-    this.dirty = true;
+    this.markChanged();
   }
 
   cancel(reason)
@@ -230,7 +240,7 @@ function repairInterrupted(session)
       text: "앱이 종료될 때 진행 중이던 작업이 있었습니다. 마지막 작업은 끝나지 않았을 수 있으니 결과를 확인해 주세요.",
       at: at
     });
-    session.dirty = true;
+    session.markChanged();
   }
 }
 
@@ -283,6 +293,7 @@ function get(workspace)
         // left where it is; it will not be read again either way
       }
       console.error("[session] could not read " + file + ": " + err.message + "; kept as " + aside);
+      session.markChanged();
       session.transcript.push({
         id: "n_corrupt", kind: "notice", level: "error",
         text: "저장된 대화 파일을 읽을 수 없어 새 대화로 시작합니다. 원본은 " + aside + " 에 보관했습니다.",
@@ -305,13 +316,61 @@ const writeChains = new Map();
 function serialize(session)
 {
   session.trimMessages();
-  session.dirty = false;
-  return JSON.stringify(session.toJSON());
+  return { body: JSON.stringify(session.toJSON()), version: session.changes };
 }
+
+// pid and a counter: the exit flush can run while an earlier save of the same
+// room is still writing, and the two must not share a temporary file.
+let tempSeq = 0;
 
 function tempFor(file)
 {
-  return file + "." + process.pid + "." + Date.now().toString(36) + ".tmp";
+  tempSeq++;
+  return file + "." + process.pid + "." + tempSeq + ".tmp";
+}
+
+// A process that exits in the middle of an asynchronous save leaves its
+// temporary file behind. Remove the ones whose writer is gone.
+function cleanStaleTemps()
+{
+  let names = [];
+  try
+  {
+    names = fs.readdirSync(sessionsDir());
+  }
+  catch (err)
+  {
+    return;
+  }
+  for (let i = 0; i < names.length; i++)
+  {
+    const m = /\.(\d+)\.\d+\.tmp$/.exec(names[i]);
+    if (!m || Number(m[1]) === process.pid)
+    {
+      continue;
+    }
+    let alive = false;
+    try
+    {
+      process.kill(Number(m[1]), 0);
+      alive = true;
+    }
+    catch (err)
+    {
+      alive = err && err.code === "EPERM";
+    }
+    if (!alive)
+    {
+      try
+      {
+        fs.unlinkSync(path.join(sessionsDir(), names[i]));
+      }
+      catch (err)
+      {
+        // already gone
+      }
+    }
+  }
 }
 
 function persist(session)
@@ -323,14 +382,14 @@ function persist(session)
     const temp = tempFor(file);
     try
     {
-      const body = serialize(session);
+      const snapshot = serialize(session);
       await fsp.mkdir(sessionsDir(), { recursive: true });
-      await fsp.writeFile(temp, body, { encoding: "utf8", mode: 0o600 });
+      await fsp.writeFile(temp, snapshot.body, { encoding: "utf8", mode: 0o600 });
       await fsp.rename(temp, file);
+      session.saved = Math.max(session.saved, snapshot.version);
     }
     catch (err)
     {
-      session.dirty = true;
       fsp.unlink(temp).catch(function () {});
       console.error("[session] persist failed:", err.message);
     }
@@ -346,10 +405,11 @@ function persistSync(session)
   const temp = tempFor(file);
   try
   {
-    const body = serialize(session);
+    const snapshot = serialize(session);
     fs.mkdirSync(sessionsDir(), { recursive: true });
-    fs.writeFileSync(temp, body, { encoding: "utf8", mode: 0o600 });
+    fs.writeFileSync(temp, snapshot.body, { encoding: "utf8", mode: 0o600 });
     fs.renameSync(temp, file);
+    session.saved = Math.max(session.saved, snapshot.version);
   }
   catch (err)
   {
@@ -377,7 +437,7 @@ function flushAllSync()
   pendingSince.clear();
   store.forEach(function (session)
   {
-    if (session.dirty)
+    if (session.saved < session.changes)
     {
       persistSync(session);
     }
@@ -396,7 +456,7 @@ const pendingSince = new Map();
 
 function persistSoon(session)
 {
-  session.dirty = true;
+  session.markChanged();
 
   const key = keyFor(session.workspace);
   const now = Date.now();
@@ -431,5 +491,6 @@ module.exports =
     return Array.from(store.values());
   },
   flushAllSync: flushAllSync,
+  cleanStaleTemps: cleanStaleTemps,
   sessionsDir: sessionsDir
 };

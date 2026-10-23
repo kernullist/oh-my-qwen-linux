@@ -14,7 +14,7 @@ An Ubuntu port of oh-my-qwen: a local web UI that turns a tool-capable Qwen mode
     sudo apt install -y build-essential cmake ninja-build zenity
     ./start.sh
 
-The UI listens on http://127.0.0.1:8787/. Use ./start.sh --no-open on a headless machine or ./start.sh --port 9000 to select another port.
+The UI listens on http://127.0.0.1:8787/. Only one server runs per data directory: starting the app again opens the running one instead of starting a second server that would overwrite the same conversations. Use ./start.sh --no-open on a headless machine or ./start.sh --port 9000 to select another port.
 
 Load a model and start Developer > Local Server in LM Studio. Select the endpoint and model in settings, then register a workspace such as /home/user/projects/my-app. To reach LM Studio on another machine, enter its address, for example http://192.168.1.28:1234, and enable "Serve on Local Network" there.
 

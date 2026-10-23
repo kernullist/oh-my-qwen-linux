@@ -2112,6 +2112,7 @@ async function main()
   testPermissionModes();
   await testReviewFindings();
   await testSessionPersistence();
+  await testClearDuringStream();
   testArgumentTypes();
   testInlineRecoveryShapes();
   await testShellEndings(base);
@@ -2548,6 +2549,23 @@ async function testSessionPersistence()
     return f.indexOf(path.basename(ws)) === 0 && /corrupt/.test(f);
   }), "gone");
 
+  // The exit flush runs while an asynchronous save is already writing. That
+  // save marked the room clean when it started, so the flush skipped it and
+  // the process ended before the write landed.
+  const inflight = fresh();
+  const busyRoom = inflight.get(path.join(ws, "inflight"));
+  busyRoom.pushTranscript({ id: "i1", kind: "user", text: "LATEST-WORDS" });
+  inflight.persist(busyRoom);
+  await new Promise(function (resolve) { setImmediate(resolve); });
+  inflight.flushAllSync();
+  const inflightFile = fs.readdirSync(inflight.sessionsDir()).filter(function (f)
+  {
+    return f.indexOf("inflight-") === 0 && /\.json$/.test(f);
+  })[0];
+  ok("a save still in flight at exit does not lose the latest change",
+    !!inflightFile && /LATEST-WORDS/.test(fs.readFileSync(path.join(inflight.sessionsDir(), inflightFile), "utf8")),
+    inflightFile || "no file");
+
   const store = fresh();
   const racing = store.get(path.join(ws, "race"));
   racing.pushTranscript({ id: "r1", kind: "user", text: "race" });
@@ -2569,11 +2587,67 @@ async function testSessionPersistence()
 
   fs.readdirSync(store.sessionsDir()).forEach(function (f)
   {
-    if (f.indexOf(path.basename(ws)) === 0 || f.indexOf("race-") === 0)
+    if (f.indexOf(path.basename(ws)) === 0 || f.indexOf("race-") === 0 || f.indexOf("inflight-") === 0)
     {
       fs.unlinkSync(path.join(store.sessionsDir(), f));
     }
   });
+  fixture.rmrf(ws);
+}
+
+// Clearing a room while an answer streamed in put that answer into the new
+// room's model history: empty on screen, sent to the model next time.
+async function testClearDuringStream()
+{
+  group("clear during a streamed answer");
+
+  const http = require("http");
+  const sessionStore = require("../src/session");
+  const server = http.createServer(function (req, res)
+  {
+    req.resume();
+    req.on("end", function ()
+    {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      let n = 0;
+      const timer = setInterval(function ()
+      {
+        res.write("data: " + JSON.stringify({ choices: [{ index: 0, delta: { content: "OLD-ROOM " } }] }) + "\n\n");
+        if (++n > 60)
+        {
+          clearInterval(timer);
+          res.end("data: [DONE]\n\n");
+        }
+      }, 30);
+      res.on("close", function () { clearInterval(timer); });
+    });
+  });
+  await new Promise(function (resolve) { server.listen(0, "127.0.0.1", resolve); });
+
+  const ws = path.join(os.tmpdir(), "omq-clear-race-" + process.pid);
+  fs.mkdirSync(ws, { recursive: true });
+  const session = new sessionStore.Session(ws);
+  const cfg = Object.assign({}, config.DEFAULTS,
+    { baseUrl: "http://127.0.0.1:" + server.address().port, model: "m", workspace: ws });
+  let deltas = 0;
+
+  await agent.runTurn({
+    session: session, cfg: cfg, userText: "hello",
+    emit: function (name)
+    {
+      if (name === "content_delta" && ++deltas === 5)
+      {
+        session.reset();
+      }
+    }
+  });
+
+  ok("the answer had started streaming", deltas >= 5, deltas);
+  eq("the cleared room's model history stays empty", session.messages, []);
+  eq("and so does its transcript", session.transcript, []);
+
+  server.closeAllConnections();
+  server.close();
   fixture.rmrf(ws);
 }
 

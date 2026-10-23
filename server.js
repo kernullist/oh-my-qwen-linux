@@ -726,6 +726,7 @@ function listen(port, attemptsLeft, opts)
     console.log("[oh-my-qwen] LM Studio: " + cfg.baseUrl + "  model: " + (cfg.model || "(not selected)"));
     console.log("[oh-my-qwen] workspace: " + (cfg.workspace || "(not set)"));
     console.log("[oh-my-qwen] data: " + config.appDir() + (config.isPortable() ? "  (portable)" : ""));
+    writeLock(shown);
 
     if (opts.open)
     {
@@ -753,6 +754,142 @@ function listen(port, attemptsLeft, opts)
   server.listen(port, HOST);
 }
 
+// One server per data directory. A busy port used to mean "try the next one",
+// so starting the app a second time brought up a second server on the same
+// conversations: each kept its own copy in memory and each save overwrote the
+// other's, and whichever room saved last decided which conversation survived.
+// The second start now finds the first one and opens it instead.
+function lockPath()
+{
+  return path.join(config.appDir(), "instance.json");
+}
+
+function readLock()
+{
+  try
+  {
+    const raw = JSON.parse(fs.readFileSync(lockPath(), "utf8"));
+    return raw && Number.isInteger(raw.pid) ? raw : null;
+  }
+  catch (err)
+  {
+    return null;
+  }
+}
+
+function pidAlive(pid)
+{
+  try
+  {
+    process.kill(pid, 0);
+    return true;
+  }
+  catch (err)
+  {
+    return err && err.code === "EPERM";
+  }
+}
+
+// Asks a port whether an oh-my-qwen server is answering there.
+function probe(port)
+{
+  return new Promise(function (resolve)
+  {
+    const req = http.get({ host: HOST, port: port, path: "/api/state", headers: { Host: HOST + ":" + port }, timeout: 1500 },
+      function (res)
+      {
+        res.resume();
+        resolve(res.statusCode === 200);
+      });
+    req.on("timeout", function () { req.destroy(); resolve(false); });
+    req.on("error", function () { resolve(false); });
+  });
+}
+
+// Claims the lock with an exclusive create, so two starts racing each other
+// cannot both win. Resolves with the URL of a running instance, or null when
+// this process now owns the lock.
+async function claimInstance()
+{
+  fs.mkdirSync(config.appDir(), { recursive: true });
+
+  for (let attempt = 0; attempt < 40; attempt++)
+  {
+    try
+    {
+      const fd = fs.openSync(lockPath(), "wx", 0o600);
+      fs.writeSync(fd, JSON.stringify({ pid: process.pid, port: null, startedAt: new Date().toISOString() }));
+      fs.closeSync(fd);
+      return null;
+    }
+    catch (err)
+    {
+      if (err.code !== "EEXIST")
+      {
+        // No lock can be taken (read-only data dir): run anyway, as before.
+        return null;
+      }
+    }
+
+    const owner = readLock();
+    if (owner && owner.pid !== process.pid && pidAlive(owner.pid))
+    {
+      if (owner.port && await probe(owner.port))
+      {
+        return "http://" + HOST + ":" + owner.port + "/";
+      }
+      // Alive but not answering yet: it may still be starting. Give it a few
+      // seconds before treating the lock as left over from a reused pid.
+      if (attempt < 30)
+      {
+        await new Promise(function (r) { setTimeout(r, 100); });
+        continue;
+      }
+    }
+
+    try
+    {
+      fs.unlinkSync(lockPath());
+    }
+    catch (err)
+    {
+      // someone else removed it first; try again
+    }
+  }
+  return null;
+}
+
+function writeLock(port)
+{
+  try
+  {
+    const temp = lockPath() + "." + process.pid + ".tmp";
+    fs.writeFileSync(temp, JSON.stringify({ pid: process.pid, port: port, startedAt: new Date().toISOString() }),
+      { mode: 0o600 });
+    fs.renameSync(temp, lockPath());
+  }
+  catch (err)
+  {
+    console.error("[oh-my-qwen] could not write the instance lock:", err.message);
+  }
+}
+
+function releaseLock()
+{
+  const owner = readLock();
+  if (owner && owner.pid === process.pid)
+  {
+    try
+    {
+      fs.unlinkSync(lockPath());
+    }
+    catch (err)
+    {
+      // already gone
+    }
+  }
+}
+
 const options = parseArgs(process.argv);
 
 // Before anything else: the exe has no console, so this is the only record of
@@ -760,7 +897,21 @@ const options = parseArgs(process.argv);
 const logFile = logger.install();
 console.log("[oh-my-qwen] log: " + logFile);
 
-listen(options.port, 10, options);
+claimInstance().then(function (running)
+{
+  if (running)
+  {
+    console.log("[oh-my-qwen] already running at " + running + " (data: " + config.appDir() + "); opening it instead");
+    if (options.open)
+    {
+      openBrowser(running);
+    }
+    process.exit(0);
+    return;
+  }
+  sessionStore.cleanStaleTemps();
+  listen(options.port, 10, options);
+});
 
 let shuttingDown = false;
 
@@ -811,6 +962,7 @@ function shutdown(reason)
 process.on("exit", function ()
 {
   sessionStore.flushAllSync();
+  releaseLock();
 });
 
 process.on("SIGINT", function ()

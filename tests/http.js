@@ -774,6 +774,21 @@ async function testRestart(server)
     ok("SIGHUP ends the server cleanly", how.code === 0, JSON.stringify(how));
 
     next = await startServer(true);
+
+    // A second start on the same data must not become a second server writing
+    // the same conversations: it finds the first one and leaves.
+    const second = spawn(process.execPath, [path.join(ROOT, "server.js"), "--port", "18787", "--no-open"],
+      { cwd: ROOT, env: Object.assign({}, process.env, { OMQ_DATA_DIR: DATA_DIR }), stdio: ["ignore", "pipe", "pipe"] });
+    let secondOut = "";
+    second.stdout.on("data", function (c) { secondOut += c.toString("utf8"); });
+    const secondExit = await new Promise(function (resolve)
+    {
+      const timer = setTimeout(function () { second.kill(); resolve(-1); }, 15000);
+      second.on("exit", function (code) { clearTimeout(timer); resolve(code); });
+    });
+    ok("a second start on the same data hands over to the running server",
+      secondExit === 0 && secondOut.indexOf("already running at http://127.0.0.1:" + next.port) >= 0,
+      "exit " + secondExit + " " + secondOut.slice(-200));
     const state = await request(next.port, "GET", "/api/state");
     const transcript = (state.json && state.json.transcript) || [];
     const text = transcript.map(function (t) { return (t.kind || "") + ":" + (t.text || t.label || ""); }).join("\n");

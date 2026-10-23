@@ -987,6 +987,17 @@ async function runTurn(ctx)
   // Saved as the turn goes, not only at its end: a turn is often minutes of
   // tool work, and a process killed halfway (OOM, a crash, power) used to lose
   // all of it, down to the message the user typed.
+  // Model history follows the same rule as the transcript: once the room was
+  // cleared, nothing this turn still has to say belongs in it. Clearing in the
+  // middle of a streamed answer put that answer into the new, empty room's
+  // history, invisible on screen and sent to the model with the next request.
+  const pushMessage = function (message)
+  {
+    if (!stale())
+    {
+      session.messages.push(message);
+    }
+  };
   const push = function (item)
   {
     session.pushTranscript(item, myEpoch);
@@ -1010,7 +1021,7 @@ async function runTurn(ctx)
     }
   }
 
-  session.messages.push({ role: "user", content: ctx.userText });
+  pushMessage({ role: "user", content: ctx.userText });
   push(userItem);
   emitLive("user_message", userItem);
 
@@ -1128,7 +1139,7 @@ async function runTurn(ctx)
           assistantMessage.reasoning_content = result.reasoning;
         }
       }
-      session.messages.push(assistantMessage);
+      pushMessage(assistantMessage);
 
       const assistantItem =
       {
@@ -1185,7 +1196,7 @@ async function runTurn(ctx)
           // replacement for what widening it actually did.
           const ranOut = result.finishReason === "length";
 
-          session.messages.push({
+          pushMessage({
             role: "user",
             content: "[runtime] Your last reply was empty" +
               (ranOut ? " because it ran into the response token limit" : "") + ". " +
@@ -1217,7 +1228,7 @@ async function runTurn(ctx)
           previewNudges++;
           const pending = Array.from(previewedOnly.values());
 
-          session.messages.push({
+          pushMessage({
             role: "user",
             content: "[runtime] You ran replace_in_files with dry_run and never ran it for real, so nothing " +
               "changed on disk:\n" + pending.map(function (label)
@@ -1251,7 +1262,7 @@ async function runTurn(ctx)
 
           const what = verifyTool(project.detect(root)) || "build_project";
 
-          session.messages.push({
+          pushMessage({
             role: "user",
             content: "[runtime] You changed files in this turn and then stopped without running anything. " +
               "Call " + what + " now and read what it reports. Fix what your own change broke. " +
@@ -1309,7 +1320,7 @@ async function runTurn(ctx)
             text: detail,
             at: new Date().toISOString()
           };
-          session.messages.push({ role: "tool", tool_call_id: call.id, name: name, content: detail });
+          pushMessage({ role: "tool", tool_call_id: call.id, name: name, content: detail });
           push(failItem);
           emitLive("tool_result", failItem);
 
@@ -1345,7 +1356,7 @@ async function runTurn(ctx)
           const held = "Not run: an earlier action in this same batch was denied by the user, and this call was " +
             "planned on the assumption that it would succeed. Re-plan from what actually happened before making " +
             "this change, and do not describe it as done.";
-          session.messages.push({ role: "tool", tool_call_id: call.id, name: name, content: held });
+          pushMessage({ role: "tool", tool_call_id: call.id, name: name, content: held });
 
           const heldItem =
           {
@@ -1376,7 +1387,7 @@ async function runTurn(ctx)
           const note = "This exact call was already made " + (seen - 1) + " time(s) in this turn and the result will not change. " +
             "Do not repeat it. Either try a materially different approach, or stop and tell the user what you need.";
 
-          session.messages.push({ role: "tool", tool_call_id: call.id, name: name, content: note });
+          pushMessage({ role: "tool", tool_call_id: call.id, name: name, content: note });
 
           const loopItem =
           {
@@ -1475,7 +1486,7 @@ async function runTurn(ctx)
               "Do not retry it. Name that action in your reply, say what is now unfinished because of it, " +
               "and do not describe it as done.";
 
-            session.messages.push({ role: "tool", tool_call_id: call.id, name: name, content: note });
+            pushMessage({ role: "tool", tool_call_id: call.id, name: name, content: note });
 
             const deniedItem =
             {
@@ -1511,7 +1522,7 @@ async function runTurn(ctx)
         // feed the model a half-finished result it never asked to abandon.
         if (execResult.cancelled)
         {
-          session.messages.push({ role: "tool", tool_call_id: call.id, name: name, content: "The user cancelled this action." });
+          pushMessage({ role: "tool", tool_call_id: call.id, name: name, content: "The user cancelled this action." });
           // Without a result the card kept saying "running", live and after
           // every reload of the saved room.
           const cancelledItem =
@@ -1589,7 +1600,7 @@ async function runTurn(ctx)
         performed.push((execResult.ok ? "ok   " : "fail ") + name + " " + (label || "") +
           (execResult.summary ? " -> " + execResult.summary : ""));
 
-        session.messages.push({ role: "tool", tool_call_id: call.id, name: name, content: execResult.text });
+        pushMessage({ role: "tool", tool_call_id: call.id, name: name, content: execResult.text });
 
         const resultItem =
         {
@@ -1740,7 +1751,7 @@ async function runTurn(ctx)
 
       if (wrap.content && wrap.content.trim())
       {
-        session.messages.push({ role: "assistant", content: wrap.content });
+        pushMessage({ role: "assistant", content: wrap.content });
       }
 
       const wrapItem =
@@ -1796,7 +1807,7 @@ async function runTurn(ctx)
     {
       if (activeContent.trim())
       {
-        session.messages.push({ role: "assistant", content: activeContent });
+        pushMessage({ role: "assistant", content: activeContent });
       }
 
       const partialItem =
@@ -1833,7 +1844,8 @@ async function runTurn(ctx)
     session.pending.clear();
 
     // Close the contract before anything is saved or the next turn reads it.
-    const closed = closeUnansweredToolCalls(session.messages,
+    // A cleared room started empty and has no calls of this turn to close.
+    const closed = stale() ? { messages: session.messages, inserted: 0 } : closeUnansweredToolCalls(session.messages,
       "This call did not run: the turn ended first (cancelled, or it failed). " +
       "Nothing was read, written or executed by it. Do not assume it had any effect.");
 
